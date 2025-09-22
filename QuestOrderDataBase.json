@@ -1,3 +1,8 @@
+
+{
+   "_comment": "Documentation: Quest Order in Memory (Quest01.arc)"
+}
+
 {
     "questOrderInMemory": {
         "10101": 0,
@@ -302,4 +307,5 @@
         "22005": 299,
         "22006": 300
     }
+
 }
