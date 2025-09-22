@@ -6,11 +6,11 @@ Designed to work with **Citra mods** or real 3DS hardware without touching your 
 
 ## 🌱 Progress 
 **Recently Completed:**
-- Manually replace the monster in a quest. The quest is completeable, but the rewards are from the original monster.
+- Automatic (~80%) replace the monster in a quest. The quest is completeable, but the rewards are from the original monster.
 
 **Next Steps:**
 - Making a good Monster/Quest/Zone/IDs database
-- Automatization
+- Editor Automatization
 - Randomizer Logic
 
 
