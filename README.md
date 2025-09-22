@@ -1,6 +1,6 @@
 # spopzol-MH4Ultimate-Randomizer 🎲🐉
 
-A **randomizer for Monster Hunter 4 Ultimate (3DS)** that modifies multiple parameters.  
+A **randomizer for Monster Hunter 4 Ultimate** that modifies multiple parameters.  
 Designed to work with **Citra mods** or real 3DS hardware without touching your original ROM.
 
 
