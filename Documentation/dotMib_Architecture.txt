@@ -1,11 +1,3 @@
 Positions of every Ids in memory (.mib files)
 
-MONSTERS ID
-0xD0 : REQUIERED MONSTER TO KILL
-0xE0 : REQUIERED MONSTER TO KILL
-[Last Row Offset] - 0x90 : MONSTER TO SPAWN 
-(EXAMPLE: IN A FILE LAST ROW IS 0x1770, THEN IT WILL BE IN 0x1770 - 0x90 = 0x16E0)
-[Last Row Offset] - 0x90 + 0x09 : WHERE TO SPAWN (NUMBERED ZONE) (IT OVER A GROUP OF 4 FFs AND NEXT TO ANOTHER FF)
- 
-Zone ID
-0xC4 : Zone
+nevermind just got something better, credit to dasding, ill upload tomorrow
