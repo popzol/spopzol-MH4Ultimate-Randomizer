@@ -1,5 +1,6 @@
-Positions of the monsters Ids in memory (.mib files)
-WHERE ARE THE MONSTERS IDS IN A QUEST FILE IN A 16-BYTES VIEW
+Positions of every Ids in memory (.mib files)
+
+MONSTERS ID
 0xD0 : REQUIERED MONSTER TO KILL
 0xE0 : REQUIERED MONSTER TO KILL
 [Last Row Offset] - 0x90 : MONSTER TO SPAWN 
