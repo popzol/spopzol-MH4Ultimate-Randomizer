@@ -6,11 +6,12 @@ Designed to work with **Citra mods** or real 3DS hardware without touching your 
 
 ## 🌱 Progress 
 **Recently Completed:**
-- Automatic (~80%) replace the monster in a quest. The quest is completeable, but the rewards are from the original monster.
+- Almost Automatic (~90%) replace the monster and the zone in a quest. The quest is completeable, but the rewards are from the original monster.
+- Right now, areas with cinematics only work with their respective monsters (only Fatalis in Schrade, Gogmazios in Dundorma, etc...).
 
 **Next Steps:**
 - Making a good Monster/Quest/Zone/IDs database
-- Editor Automatization
+- 100% Automatization
 - Randomizer Logic
 
 
