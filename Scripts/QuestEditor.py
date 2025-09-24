@@ -1,9 +1,9 @@
 #THIS IS BASED OF DASDING'S CQ EDITOR, TRANSLATED INTO PYTHON BY CHATGPT I DO NOT UNDERSTAND SHIT ABOUT WHAT IS GOING ON, SO DON'T ASK ME
-#THIS JUST WORKS AND DOESN'T EXPLODE A PC
 #ALL CREDIT ABOUT THIS CODE OBVIOUSLY GOES TO DASDING
-#Just vibe-coded all this, dont blame me too hard, it is my first mod, programming project 
+
 import os
 import struct
+import math
 from pathlib import Path
 
 def getQuestFolder():
@@ -335,8 +335,7 @@ def write_small_meta(questFilePath: str, size: int = None, unk0: int = None, hp:
 # write_loot_table, write_supplies, pretty_print_quest_summary,
 # find_and_replace_monster, verify_tables
 # ---------------------------
-import struct
-import math
+
 
 def append_aligned(path: str, data: bytes, align: int = 0x10) -> int:
     """Append data to file aligned to `align`. Return absolute address where data was written."""
@@ -438,8 +437,7 @@ def write_supplies(questFilePath: str, supplies_top: list):
     return top_addr
 
 # === START: standalone parse_mib + pretty_print_quest_summary ===
-import struct
-import os
+
 
 def _load_file(path: str) -> bytes:
     with open(path, "rb") as f:
@@ -521,15 +519,14 @@ def _parse_monster_from_buf(buf: bytes, offset: int):
     m['z_rot'] = _read_dword(buf, offset + 0x24)
     return m
 
+
+
+
+
+
 # top-level parse_mib
 def parse_mib(path: str) -> dict:
-    """
-    Self-contained parse_mib that reads the file into memory and parses structures.
-    Uses local helper functions to avoid colliding with other module-level names.
-    """
-    import struct
-    import os
-
+    import struct, os
     if not os.path.exists(path):
         raise FileNotFoundError(path)
 
@@ -537,21 +534,29 @@ def parse_mib(path: str) -> dict:
         buf = f.read()
     size = len(buf)
 
-    # --- local readers (buffer-based) ---
+    def _is_valid_ptr(addr: int) -> bool:
+        return addr != 0 and 0 <= addr < size
+
+    MONSTER_STRUCT_SIZE = 0x28
+    UNSTABLE_ENTRY_STRIDE = 0x2C
+
+    # safe readers over buf (return 0 / 0.0 on OOB)
     def read_b(off: int) -> int:
+        if off + 1 > size: return 0
         return struct.unpack_from("<B", buf, off)[0]
-
     def read_w(off: int) -> int:
+        if off + 2 > size: return 0
         return struct.unpack_from("<H", buf, off)[0]
-
     def read_dw(off: int) -> int:
+        if off + 4 > size: return 0
         return struct.unpack_from("<I", buf, off)[0]
-
     def read_f(off: int) -> float:
+        if off + 4 > size: return 0.0
         return struct.unpack_from("<f", buf, off)[0]
-
     def read_bytes_local(off: int, ln: int) -> bytes:
-        return buf[off:off+ln]
+        if off + ln > size:
+            return buf[off: size]
+        return buf[off: off+ln]
 
     def read_dword_array_until_zero_local(off: int):
         arr = []
@@ -576,6 +581,9 @@ def parse_mib(path: str) -> dict:
         return "".join(s)
 
     def parse_monster_local(off: int):
+        # ensure full monster struct is inside buffer
+        if off + MONSTER_STRUCT_SIZE > size:
+            return None
         m = {}
         m['monster_id'] = read_dw(off + 0x00)
         m['qty'] = read_dw(off + 0x04)
@@ -595,7 +603,6 @@ def parse_mib(path: str) -> dict:
         m['z_rot'] = read_dw(off + 0x24)
         return m
 
-    # --- start parse ---
     q = {}
     # static header
     q['header_addr'] = read_dw(0x00)
@@ -613,11 +620,10 @@ def parse_mib(path: str) -> dict:
     q['monster_ai'] = read_b(0x8B)
     q['spawn_area'] = read_b(0x8C)
 
-    # dynamic header base
     header_addr = q['header_addr']
     header_offset = header_addr - 0xA0
 
-    # dynamic fields
+    # dynamic fields (read safely)
     q['quest_type'] = read_b(header_offset + 0xA0)
     a1 = read_b(header_offset + 0xA1)
     q['huntathon_flag'] = bool(a1 & 1)
@@ -634,18 +640,22 @@ def parse_mib(path: str) -> dict:
     q['time'] = read_dw(header_offset + 0xB4)
     q['intruder_chance2'] = read_dw(header_offset + 0xB8)
 
-    # parse text (similar logic to JS)
+    # parse text
     text_top_ptr = read_dw(header_offset + 0xBC)
     q['text'] = []
-    if text_top_ptr != 0:
+    if text_top_ptr != 0 and _is_valid_ptr(text_top_ptr):
         for i in range(5):
             addr = read_dw(text_top_ptr + i*4)
             if addr == 0:
+                break
+            if not _is_valid_ptr(addr):
                 break
             lang = []
             for j in range(7):
                 saddr = read_dw(addr + j*4)
                 if saddr == 0:
+                    break
+                if not _is_valid_ptr(saddr):
                     break
                 lang.append(read_string_utf16_pairs_local(saddr))
             q['text'].append(lang)
@@ -661,27 +671,30 @@ def parse_mib(path: str) -> dict:
 
     q['objectives'] = [parse_objective_at(header_offset + 0xCC), parse_objective_at(header_offset + 0xD4)]
     q['objective_sub'] = parse_objective_at(header_offset + 0xDC)
-    # pictures
     q['pictures'] = [read_w(header_offset + 0xE8 + i*2) for i in range(5)]
 
-    # supplies
+    # supplies (safe)
     def parse_supplies_local():
         base_addr = read_dw(0x08)
         out = []
-        if base_addr == 0:
+        if base_addr == 0 or not _is_valid_ptr(base_addr):
             return out
         idx = 0
         while True:
             entry_off = base_addr + idx*8
-            if entry_off + 1 >= size:
+            if entry_off + 8 > size:
                 break
             item_table_idx = read_b(entry_off)
             if item_table_idx == 0xFF:
                 break
             length = read_b(entry_off + 1)
             addr = read_dw(entry_off + 4)
+            if not _is_valid_ptr(addr):
+                break
             items = []
             for i in range(length):
+                if addr + i*4 + 4 > size:
+                    break
                 iid = read_w(addr + i*4)
                 qty = read_w(addr + i*4 + 2)
                 if iid == 0:
@@ -695,10 +708,11 @@ def parse_mib(path: str) -> dict:
 
     q['supplies'] = parse_supplies_local()
 
-    # refills
+    # refills (safe)
     q['refills'] = []
     for i in range(2):
         base = 0x0C + 8*i
+        if base + 8 > size: break
         q['refills'].append({
             'box': read_b(base + 0),
             'condition': read_b(base + 1),
@@ -706,21 +720,27 @@ def parse_mib(path: str) -> dict:
             'qty': read_b(base + 4)
         })
 
-    # loot parser helper
+    # loot parser (safe)
     def parse_loot_local(offset):
         base = read_dw(offset)
         out = []
-        if base == 0:
+        if base == 0 or not _is_valid_ptr(base):
             return out
         idx = 0
         while True:
+            if base + idx*8 + 4 > size:
+                break
             val = read_dw(base + idx*8)
             if val == 0 or val == 0xFFFF:
                 break
             addr = read_dw(base + idx*8 + 4)
+            if not _is_valid_ptr(addr):
+                break
             items = []
             j = 0
             while True:
+                if addr + j*6 + 2 > size:
+                    break
                 chance = read_w(addr + j*6)
                 if chance == 0xFFFF:
                     break
@@ -744,6 +764,9 @@ def parse_mib(path: str) -> dict:
     conds = []
     base_cond = 0x64
     for i in range(2):
+        if base_cond + 8*i + 8 > size:
+            conds.append({'type':0,'target':0,'qty':0,'group':0})
+            continue
         conds.append({
             'type': read_b(base_cond + 0 + 8*i),
             'target': read_w(base_cond + 4 + 8*i),
@@ -752,76 +775,88 @@ def parse_mib(path: str) -> dict:
         })
     q['small_monster_conditions'] = conds
 
-    # large monster table
+    # --- IMPORTANT: initialize top-table address lists safely ---
     lbase = read_dw(0x28)
-    q['large_monster_table_addresses'] = read_dword_array_until_zero_local(lbase) if lbase != 0 else []
+    if lbase != 0 and _is_valid_ptr(lbase):
+        q['large_monster_table_addresses'] = read_dword_array_until_zero_local(lbase)
+    else:
+        q['large_monster_table_addresses'] = []
+
+    sbase = read_dw(0x2C)
+    if sbase != 0 and _is_valid_ptr(sbase):
+        q['small_monster_table_addresses'] = read_dword_array_until_zero_local(sbase)
+    else:
+        q['small_monster_table_addresses'] = []
+
+    # large monster table (safe bounded parse)
     q['large_monster_table'] = []
     for addr in q['large_monster_table_addresses']:
+        if not _is_valid_ptr(addr):
+            q['large_monster_table'].append([])
+            continue
         arr = []
         for i in range(0, 200):
-            off = addr + i*0x28
-            if off + 4 > size:
+            off = addr + i * MONSTER_STRUCT_SIZE
+            if off + MONSTER_STRUCT_SIZE > size:
                 break
             mid = read_dw(off)
             if mid == 0xFFFFFFFF:
                 break
-            arr.append(parse_monster_local(off))
+            mon = parse_monster_local(off)
+            if mon is None:
+                break
+            arr.append(mon)
         q['large_monster_table'].append(arr)
 
-    # small monster table
-    sbase = read_dw(0x2C)
-    q['small_monster_table_addresses'] = read_dword_array_until_zero_local(sbase) if sbase != 0 else []
+    # small monster table (nested) - uses small_monster_table_addresses for top
     q['small_monster_table'] = []
-    for top_addr in q['small_monster_table_addresses']:
-        sublist = []
-        for sub_ptr in read_dword_array_until_zero_local(top_addr):
-            monsters = []
-            for i in range(0, 200):
-                off = sub_ptr + i*0x28
-                if off + 4 > size:
-                    break
-                mid = read_dw(off)
-                if mid == 0xFFFFFFFF:
-                    break
-                monsters.append(parse_monster_local(off))
-            sublist.append(monsters)
-        q['small_monster_table'].append(sublist)
+    if sbase != 0 and _is_valid_ptr(sbase):
+        top_ptrs = read_dword_array_until_zero_local(sbase)
+        for top_addr in top_ptrs:
+            if not _is_valid_ptr(top_addr):
+                q['small_monster_table'].append([])
+                continue
+            sublist = []
+            sub_ptrs = read_dword_array_until_zero_local(top_addr)
+            for sub_ptr in sub_ptrs:
+                if not _is_valid_ptr(sub_ptr):
+                    continue
+                monsters = []
+                for i in range(0, 200):
+                    off = sub_ptr + i * MONSTER_STRUCT_SIZE
+                    if off + MONSTER_STRUCT_SIZE > size:
+                        break
+                    mid = read_dw(off)
+                    if mid == 0xFFFFFFFF:
+                        break
+                    mon = parse_monster_local(off)
+                    if mon is None:
+                        break
+                    monsters.append(mon)
+                sublist.append(monsters)
+            q['small_monster_table'].append(sublist)
+    else:
+        q['small_monster_table'] = []
 
     # unstable
-    ubase = read_dw(0x30)
     q['unstable_monster_table'] = []
-    if ubase != 0:
+    ubase = read_dw(0x30)
+    if ubase != 0 and _is_valid_ptr(ubase):
         for idx in range(0, 200):
-            chance = read_w(ubase + idx*0x2C)
+            entry_off = ubase + idx * UNSTABLE_ENTRY_STRIDE
+            if entry_off + 2 > size:
+                break
+            chance = read_w(entry_off)
             if chance == 0xFFFF:
                 break
-            monster = parse_monster_local(ubase + idx*0x2C + 4)
+            monster_off = entry_off + 4
+            if monster_off + MONSTER_STRUCT_SIZE > size:
+                break
+            monster = parse_monster_local(monster_off)
+            if monster is None:
+                break
             q['unstable_monster_table'].append({'chance': chance, 'monster': monster})
 
-    # meta tables
-    q['large_meta_table'] = []
-    for idx in range(5):
-        off = 0x34 + idx*8
-        q['large_meta_table'].append({
-            'size': read_w(off),
-            'size_var': read_b(off+2),
-            'hp': read_b(off+3),
-            'atk': read_b(off+4),
-            'break_res': read_b(off+5),
-            'stamina': read_b(off+6),
-            'status_res': read_b(off+7)
-        })
-    q['small_meta'] = {
-        'size': read_w(0x5C),
-        'unk0': read_b(0x5D),
-        'hp': read_b(0x5F),
-        'atk': read_b(0x60),
-        'break_res': read_b(0x61),
-        'stamina': read_b(0x62),
-        'unk2': read_b(0x63)
-    }
-
-    # convenience counts
     q['large_monsters_per_table'] = [len(t) for t in q['large_monster_table']]
     q['large_monsters_total'] = sum(q['large_monsters_per_table'])
 
