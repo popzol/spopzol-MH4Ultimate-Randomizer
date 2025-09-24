@@ -1,6 +1,6 @@
 #THIS IS BASED OF DASDING'S CQ EDITOR, TRANSLATED INTO PYTHON BY CHATGPT I DO NOT UNDERSTAND SHIT ABOUT WHAT IS GOING ON, SO DON'T ASK ME
 #ALL CREDIT ABOUT THIS CODE OBVIOUSLY GOES TO DASDING
-
+import VariousLists
 import os
 import struct
 import math
@@ -450,8 +450,21 @@ def _read_byte(buf: bytes, offset: int) -> int:
 def _read_word(buf: bytes, offset: int) -> int:
     return struct.unpack_from("<H", buf, offset)[0]
 
-def _read_dword(buf: bytes, offset: int) -> int:
-    return struct.unpack_from("<I", buf, offset)[0]
+import os, struct
+
+def _read_dword(path: str, offset: int) -> int:
+    """Safe read of 4 bytes dword from file path at offset. Raises informative EOFError if out-of-bounds."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"read_dword: file not found: {path}")
+    size = os.path.getsize(path)
+    if offset < 0 or offset + 4 > size:
+        raise EOFError(f"read_dword: attempt to read 4 bytes at offset 0x{offset:X} but file size is 0x{size:X}")
+    with open(path, "rb") as f:
+        f.seek(offset)
+        b = f.read(4)
+        if len(b) < 4:
+            raise EOFError(f"read_dword: short read at 0x{offset:X}")
+        return struct.unpack_from("<I", b, 0)[0]
 
 def _read_float(buf: bytes, offset: int) -> float:
     return struct.unpack_from("<f", buf, offset)[0]
@@ -805,6 +818,11 @@ def parse_mib(path: str) -> dict:
             mon = parse_monster_local(off)
             if mon is None:
                 break
+            monID = mon['monster_id']
+            if not monID in VariousLists.getLargeList():
+                if not monID in VariousLists.getSmallList():
+                    break
+        
             arr.append(mon)
         q['large_monster_table'].append(arr)
 
@@ -894,17 +912,30 @@ def pretty_print_quest_summary(path: str):
 # ---------- FIND AND REPLACE MONSTER ----------
 def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int, dry_run: bool = False):
     """
-    Search through large, small and unstable monster tables and replace monster_id occurrences.
-    Returns count of replacements.
-    If dry_run True -> only report what would be changed.
+    Versión robusta: evita lecturas fuera de fichero y salta tablas/punteros inválidos.
     """
     replaced = 0
-    # large
+    size = os.path.getsize(path)
+
+    def safe_read_dword_at(off):
+        if off < 0 or off + 4 > size:
+            # fuera de rango
+            print(f"[WARN] safe_read_dword_at: off 0x{off:X} fuera de rango (filesize 0x{size:X})")
+            return None
+        return read_dword(path, off)
+
+    # --- large monsters ---
     base_list = get_large_monster_table_addresses(path)
     for table_idx, a in enumerate(base_list):
+        if a == 0 or a < 0 or a >= size:
+            print(f"[WARN] large table pointer #{table_idx} inválido: 0x{a:X}")
+            continue
         idx = 0
         while True:
             off = a + idx * 0x28
+            if off + 4 > size:
+                print(f"[WARN] large[{table_idx}] off 0x{off:X} supera filesize 0x{size:X} -> stop")
+                break
             mid = read_dword(path, off)
             if mid == 0xFFFFFFFF:
                 break
@@ -916,17 +947,29 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
                     print(f"[WRITE] replaced large at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                 replaced += 1
             idx += 1
+            if idx > 1000:
+                print(f"[WARN] large[{table_idx}] demasiadas iteraciones, abortando (safety limit)")
+                break
 
-    # small (two-level)
+    # --- small monsters: nested tables ---
     base_small_ptr = read_dword(path, 0x2C)
     if base_small_ptr != 0:
         top_ptrs = read_dword_array_until_zero(path, base_small_ptr)
-        for top in top_ptrs:
+        for top_idx, top in enumerate(top_ptrs):
+            if top == 0 or top < 0 or top >= size:
+                print(f"[WARN] small top pointer #{top_idx} inválido: 0x{top:X}")
+                continue
             sub_ptrs = read_dword_array_until_zero(path, top)
-            for addr in sub_ptrs:
+            for sub_idx, addr in enumerate(sub_ptrs):
+                if addr == 0 or addr < 0 or addr >= size:
+                    print(f"[WARN] small sub pointer idx {sub_idx} inválido: 0x{addr:X}")
+                    continue
                 idx = 0
                 while True:
                     off = addr + idx * 0x28
+                    if off + 4 > size:
+                        print(f"[WARN] small[{top_idx}][{sub_idx}] off 0x{off:X} fuera de rango -> stop")
+                        break
                     mid = read_dword(path, off)
                     if mid == 0xFFFFFFFF:
                         break
@@ -938,16 +981,26 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
                             print(f"[WRITE] replaced small at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                         replaced += 1
                     idx += 1
+                    if idx > 1000:
+                        print(f"[WARN] small[{top_idx}][{sub_idx}] safety limit hit, break")
+                        break
 
-    # unstable
+    # --- unstable table ---
     base_unstable = read_dword(path, 0x30)
     if base_unstable != 0:
         idx = 0
         while True:
-            chance = read_word(path, base_unstable + idx * 0x2C)
+            entry_off = base_unstable + idx * 0x2C
+            if entry_off + 2 > size:
+                print(f"[WARN] unstable entry_off 0x{entry_off:X} fuera de rango -> stop")
+                break
+            chance = read_word(path, entry_off)
             if chance == 0xFFFF:
                 break
-            off = base_unstable + idx * 0x2C + 4
+            off = entry_off + 4
+            if off + 4 > size:
+                print(f"[WARN] unstable monster struct at 0x{off:X} fuera de rango -> stop")
+                break
             mid = read_dword(path, off)
             if mid == old_monster_id:
                 if dry_run:
@@ -957,6 +1010,9 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
                     print(f"[WRITE] replaced unstable at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                 replaced += 1
             idx += 1
+            if idx > 1000:
+                print("[WARN] unstable safety limit reached")
+                break
 
     print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
     return replaced
