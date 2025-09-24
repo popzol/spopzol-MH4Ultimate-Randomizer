@@ -1,0 +1,239 @@
+MIB FILE FORMAT — ARCHITECTURE REFERENCE (ENGLISH)
+==================================================
+
+Purpose
+-------
+This document describes the internal architecture of typical mission (.mib) files used by the game. 
+It lists known absolute offsets, the data types stored there, common conventions (endianness, alignments,
+terminators), and the meaning of the most important structures. This is an architecture-only reference:
+no implementation code or language-specific examples are included — only the binary layout and semantics.
+
+GENERAL CONVENTIONS
+-------------------
+- Endianness: Little-endian for multi-byte integers and floats.
+- Integer sizes:
+  - byte  = 1 octet (8 bits)
+  - word  = 2 octets (16 bits)
+  - dword = 4 octets (32 bits)
+  - float = 4 octets (IEEE 754 single precision)
+- Alignment: Newly allocated blocks within the file are typically aligned to 16-byte boundaries (0x10).
+- Terminators:
+  - dword-array terminator = 0x00000000 (4 bytes)
+  - monster-array terminator = 0xFFFFFFFF (4 bytes)
+  - item-table terminator (word) = 0xFFFF (2 bytes)
+- Strings: Usually stored as sequences of 16-bit words (little-endian) terminated by 0x0000. These behave like UTF-16LE code-units without BOM.
+
+KNOWN ABSOLUTE OFFSETS AND THEIR MEANING
+----------------------------------------
+(Offsets listed in hexadecimal, values are absolute file offsets unless otherwise noted.)
+
+0x00  — Header pointer (dword)
+      - Contains an absolute address that locates the "dynamic header block".
+      - This pointer is used as a base to compute the actual positions of many dynamic header fields.
+      - Convention: to resolve a dynamic label L (whose canonical label in documents is 0xA0..), compute:
+        actual_offset = header_pointer + (L - 0xA0)
+        (Equivalently, some references compute header_offset = header_pointer - 0xA0 and then use header_offset + L.)
+
+0x04  — Version / marker (4 bytes)
+      - 4 raw bytes commonly used as a version marker or magic/version stamp for the .mib file.
+
+0x08  — Supplies table pointer (dword)
+      - Points to a "supplies top-table": a list of small item-lists. Each top-table entry contains: 
+        table_index (byte), length (byte), filler (word), items_address (dword).
+      - Termination convention for the top-table: a sentinel (commonly a 0xFF in the first byte or other end marker).
+
+0x0C  — Refill entries (two entries, each 8 bytes)
+      - Entry layout (per-entry base = 0x0C + 8*i):
+        + byte 0 : box id or enable flag
+        + byte 1 : condition id
+        + byte 2 : monster id (byte)
+        + byte 3 : filler / unused
+        + byte 4 : quantity (qty)
+        + bytes 5-7 : filler / reserved
+      - There are two refill slots (i = 0 and 1).
+
+0x1C  — Loot A pointer (dword)
+0x20  — Loot B pointer (dword)
+0x24  — Loot C pointer (dword)
+      - Each points to a loot top-table. Each top-table entry typically contains:
+        dword: flag (or table id)
+        dword: pointer to an item table for that flag
+      - Top-table is terminated by a dword 0x00000000.
+      - Item tables: sequence of entries of 3 words (chance, item_id, qty) — repeated until a word chance == 0xFFFF terminator.
+
+0x28  — Large monster table pointer (dword)
+      - Points to a top-table: an array of dword addresses. Each dword is the absolute address of a "monster-array".
+      - Top-table is terminated by dword 0x00000000.
+      - Each "monster-array" consists of consecutive monster structures; it is terminated by dword 0xFFFFFFFF.
+      - Monster-structure size: 0x28 bytes (40 bytes) per entry.
+
+0x2C  — Small monster table pointer (dword)
+      - Points to a top-table of dword pointers. Each entry of that top-table is itself a pointer to a "sub-top-table".
+      - Each sub-top-table contains dword addresses of monster-arrays (nested lists). Terminators: dword 0x00000000 at each level.
+      - Monster-arrays at the bottom level use the same 0x28-sized monster-structure entries and end with 0xFFFFFFFF.
+
+0x30  — Unstable monster table base pointer (dword)
+      - Points to an array of fixed-size entries. Each entry starts with a word "chance".
+      - Reading proceeds until a chance of 0xFFFF indicates the end.
+      - Each entry contains a monster structure (same 0x28 layout) following the chance field.
+
+0x34  — Large meta table start (five entries × 8 bytes each)
+      - Five meta entries located consecutively at 0x34, 0x3C, 0x44, 0x4C, 0x54.
+      - Each meta entry (8 bytes) contains:
+        word size, byte size_var, byte padding, byte hp, byte atk, byte break_res, byte stamina, byte status_res
+        (Field packing varies slightly across implementations but follows the 8-byte block convention.)
+
+0x5C  — Small meta block (approx. 8 bytes)
+      - Contains: word size, byte unk0, (one padding), byte hp, byte atk, byte break_res, byte stamina, byte unk2
+      - Used for smaller monster meta or alternate category metadata.
+
+0x64  — Small monster conditions (two entries × 8 bytes)
+      - Two entries (i = 0,1). Per-entry layout:
+        byte 0 : type
+        bytes 1-3 : padding / reserved
+        word at +4 : target id (word)
+        byte at +6 : qty
+        byte at +7 : group id
+
+0x74  — HRP (dword)
+0x78  — HRP reduction (dword)
+0x7C  — HRP sub (dword)
+0x80  — Intruder timer (byte)
+0x82  — Intruder chance (byte)
+0x89  — Gather rank (byte)
+0x8A  — Carve rank (byte)
+0x8B  — Monster AI level (byte)
+0x8C  — Spawn area id (byte)
+0x8D  — Arena fence flag (byte)
+0x8E  — Fence state (byte)
+0x8F  — Fence uptime (byte)
+0x90  — Fence cooldown (byte)
+      - These are "static header" fields with fixed absolute offsets; they store mission-level numeric parameters and flags.
+
+DYNAMIC HEADER (LOCATED VIA POINTER AT 0x00)
+--------------------------------------------
+A large portion of quest-specific fields live in a "dynamic header block" whose absolute location is stored at 0x00.
+The dynamic header uses canonical labels in the 0xA0..0xE8 range; to get the real absolute offset for a label L use:
+   actual_offset = header_pointer + (L - 0xA0)
+(Effectively, the canonical label 0xA0 maps to the absolute address stored in the dword at 0x00.)
+
+Common dynamic-header fields (labels and their semantic meaning):
+- 0xA0 (byte) — quest_type (mission category id)
+- 0xA1 (byte) — flags (bitfield): huntathon_flag bit0, intruder_flag bit1, repel_flag bit2, etc.
+- 0xA2 (byte) — flags (bitfield): various booleans (harvest, challenge, sub_flag, etc.)
+- 0xA3 (byte) — flags (bitfield): additional toggles (advanced, integrity, etc.)
+- 0xA4 (dword) — fee (in-game currency)
+- 0xA8 (dword) — reward_main (main reward pointer/value)
+- 0xAC (dword) — reward_reduction
+- 0xB0 (dword) — reward_sub
+- 0xB4 (dword) — time limit (seconds)
+- 0xB8 (dword) — intruder_chance2 (extended intruder chance)
+- 0xBC (dword) — text top-pointer (points to a table of language tables)
+- 0xC0 (word)  — quest_id
+- 0xC2 (word)  — quest_rank
+- 0xC4 (byte)  — map_id
+- 0xC5 (byte)  — requirement byte 0
+- 0xC6 (byte)  — requirement byte 1
+- 0xCB (byte)  — objective_amount (how many objectives to display)
+- 0xCC (dword) — objective 0 pointer/structure (see objective layout below)
+- 0xD4 (dword) — objective 1 pointer/structure
+- 0xDC (dword) — objective_sub pointer/structure
+- 0xE8 .. 0xF0 — pictures array (series of word indices; often 5 entries)
+
+OBJECTIVE STRUCTURE (at 0xCC / 0xD4 / 0xDC relative labels)
+-----------------------------------------------------------
+Each objective block contains at least:
+- dword: objective type (identifier)
+- word: target id
+- word: quantity (qty)
+This structure is compact and frequently used for main/sub objectives.
+
+MONSTER STRUCTURE (size = 0x28 bytes — 40 bytes total)
+------------------------------------------------------
+Standard layout of each monster entry in arrays (absolute byte ordering):
+- 0x00 (dword) : monster_id
+- 0x04 (dword) : quantity (qty)
+- 0x08 (byte)  : condition
+- 0x09 (byte)  : area (zone/subzone id)
+- 0x0A (byte)  : crashflag (unknown flag)
+- 0x0B (byte)  : special (unknown flag)
+- 0x0C (byte)  : unk2
+- 0x0D (byte)  : unk3
+- 0x0E (byte)  : unk4
+- 0x0F (byte)  : infection (status)
+- 0x10 (float) : X position (float32)
+- 0x14 (float) : Y position (float32)
+- 0x18 (float) : Z position (float32)
+- 0x1C (dword) : x_rot (rotation / orientation)
+- 0x20 (dword) : y_rot
+- 0x24 (dword) : z_rot
+- End of a monster-array is signaled by a dword value 0xFFFFFFFF in the monster_id position.
+
+LOOT TABLE LAYOUT (conceptual)
+-------------------------------
+- Top-table (pointed at by offsets 0x1C/0x20/0x24): sequence of entries
+  - entry: dword flag, dword pointer-to-item-table
+  - terminator: dword 0x00000000
+- Item-table (pointed by top-table entry): sequence of entries, each:
+  - word chance, word item_id, word qty  (6 bytes per entry)
+  - terminator: word chance == 0xFFFF (0xFFFF indicates end)
+
+SUPPLIES TABLE LAYOUT (conceptual)
+----------------------------------
+- Top-table pointer at 0x08 points to an array of fixed 8-byte entries:
+  - byte: table_index (usually sequential)
+  - byte: length (number of items)
+  - word: filler/reserved
+  - dword: pointer to item table
+- Each item table consists of entries: word item_id, word qty; terminated by word item_id == 0x0000.
+
+UNSTABLE MONSTER TABLE
+----------------------
+- Located via pointer at 0x30. Each entry in the table begins with a word "chance".
+- The chance word 0xFFFF indicates termination of the list.
+- Each entry contains a monster structure (same 0x28 layout) following the chance field.
+
+VALIDATION RULES / SAFE-MODIFICATION GUIDELINES
+-----------------------------------------------
+1. Always keep an original backup of a .mib before modifying the file.
+2. When adding new tables or lists, append them to the file end and align new blocks to 16 bytes.
+3. After writing pointers, always ensure pointers point to valid file offsets (inside file bounds).
+4. Respect the expected terminators (0x00000000 for pointer-lists, 0xFFFFFFFF for monster-arrays, 0xFFFF for item-lists).
+5. Multi-byte numeric fields must be interpreted/stored in little-endian order.
+6. Use reasonable sanity checks: monster-arrays should contain a terminator within a small multiple of expected monsters (e.g., < 500 entries). Pointer-tables should have terminators present before reading thousands of entries.
+7. When changing dynamic-header fields, resolve the header base using the pointer at 0x00 (see “DYNAMIC HEADER” above).
+
+TYPICAL FILE LAYOUT SUMMARY (linear view)
+-----------------------------------------
+[0x00] header pointer  (dword)
+[0x04] version bytes   (4 bytes)
+[0x08] supplies ptr    (dword)
+[0x0C] refill entry 0  (8 bytes)
+[0x14] refill entry 1  (8 bytes)
+[0x1C] loot A ptr      (dword)
+[0x20] loot B ptr      (dword)
+[0x24] loot C ptr      (dword)
+[0x28] large monster top ptr (dword)
+[0x2C] small monster top ptr (dword)
+[0x30] unstable monster base (dword)
+[0x34] meta table (5 × 8 bytes)
+[0x5C] small meta block
+[0x64] small-monster conditions (2 × 8 bytes)
+[0x74] various static numeric fields (HRP, flags, timers...)
+... (dynamic header located at address stored in 0x00)
+... (appendable data blocks: monster arrays, item tables, text blobs, etc.)
+
+NOTES, CAVEATS AND VARIABILITY
+------------------------------
+- Game versions or regional builds may store slightly different fields or change offsets; the offsets above are the common canonical layout observed in many mission files but may not be universal.
+- Some entries are pointers that can be zero (meaning "no table present"). Tools that edit the file should handle missing tables gracefully.
+- The "dynamic header" approach allows the same canonical labels (0xA0..0xE8) to be relocated inside the file; the pointer at 0x00 makes the layout flexible.
+- Numeric fields described as IDs (monster_id, map_id, item_id) are references into external catalogs; their interpretation depends on the game’s internal indexing.
+
+FINAL RECOMMENDATIONS
+---------------------
+If you are designing a parser/editor based on this architecture:
+- Read the header pointer at 0x00 first and resolve dynamic fields using the described mapping.
+- Validate pointers and terminators before following them.
+- When adding data, append aligned blocks and write pointers atomically (so the file never references partially written blocks).
+- Document any additions to the file clearly and include backups for users.
