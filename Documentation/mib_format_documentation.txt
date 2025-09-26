@@ -1,4 +1,4 @@
-MIB FILE FORMAT — ARCHITECTURE REFERENCE (ENGLISH)
+MIB FILE FORMAT — ARCHITECTURE REFERENCE
 ==================================================
 
 Purpose
