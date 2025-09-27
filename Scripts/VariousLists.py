@@ -157,46 +157,76 @@ def subMapsOf(i: int)->list:
         "Sm10": [1],                              # "Castle Schrade" / "Castillo Schrade"
         "Sm11": [1],                              # "Arena" / "Arena"
         "Sm12": [1],                              # "Slayground" / "Arena (2 Pisos)"
-        "Sm13": [1],                              # "Everwood" / "Bosque eterno"
+                                                  # "Everwood" / "Bosque eterno"
         "Sm14": [1],                              # "Great Sea" / "Gran mar"
-        "Sm15": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], # "Volcanic Hollow" / "Hondonada volcánica"
+        "Sm15": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],  # "Volcanic Hollow" / "Hondonada volcánica"
         "Sm16": [1],                              # "Sanctuary (Shagaru Magala)" / "Santuario (Shagaru Magala)"
         "Sm17": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], # "Dunes (Day)" / "Dunas (Día)"
         "Sm18": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], # "Dunes (Night)" / "Dunas (Noche)"
-        "Sm19": [2, 3],                        # "Battlequarters" / "Caserna"
+        "Sm19": [2, 3],                            # "Battlequarters" / "Caserna"
         "Sm20": [1],                               # "Polar Field (Ukanlos)" / "Campo polar (Ukanlos)"
         "Sm21": [1]                                # "Great Sea (Storm)" / "Gran mar (Tormenta)"
     }
     key = f"Sm{i}"
     return subMaps.get(key,None)
 
+def getListOfCoords(zone :int, area: int)->list:
+    mylist = [
+    [[91.0, 976.0], [45.5, -579.0], [34.5, 533.0], [477.0, 488.5], [-79.5, -862.5], [159.0, -11.5], [352.0, 147.5], [840.0, -646.5], [238.5, 238.5], [-760.5, 885.5], [-102.5, -681.0]],
+    [[56.5, 142.0], [-749.0, -771.5], [-397.0, -193.0], [-68.0, 2088.5], [-91.0, -1350.5], [1316.5, 1509.5], [704.0, -249.5], [-22.5, -431.5], [1373.5, -851.5], [-85.0, -896.5], [-431.5, -1169.5]],
+    [[-147.5, -147.5], [1520.5, -1895.5], [0.0, -942.0], [-420.0, 794.5], [-726.5, 817.0], [-159.0, 272.0], [726.5, 340.5], [692.5, 0.0], [283.5, -1532.5], [-23.0, -158.5]],
+    [[193.0, -45.5], [-862.5, -2553.5], [863.0, 647.0], [397.5, 2406.0], [908.0, -1010.0], [-499.5, -45.0], [-1112.0, -1260.0], [1089.5, 715.0], [1135.0, -2077.0], [760.5, 1759.0]],
+    [[-306.5, 318.0], [-386.0, 2281.0], [-874.0, 159.0], [1180.5, -3042.0], [442.5, 125.0], [-159.0, -408.5], [-102.5, -454.0], [113.5, 193.0], [-45.5, 102.0]],
+    [[0.0,0.0]],
+    [[0.0,0.0]],
+    [[-465.5, 3257.5]],
+    [[-68.0, 601.5]],
+    [[0.0,0.0]],
+    [[147.5, 11.5]],
+    [[147.5, 11.5]],
+    [[0.0,0.0]],
+    [[0.0,0.0]],
+    [[-749.0, -771.5], [874.0, -193.0], [-68.0, 2088.5], [-91.0, -1350.5], [1316.5, 1509.5], [704.0, -249.5], [-22.5, -431.5], [1566.5, -800.0], [874.0, -976.0], [-431.5, -1169.5]],
+    [[-34.0, -215.5]],
+    [[1418.5, -352.0], [-68.0, 1135.0], [-181.5, 56.5], [1146.0, -511.0], [-193.0, 340.5], [318.0, -79.5], [544.5, 374.5], [431.0, -182.0], [1078.5, 0.0], [170.0, -170.5], [283.5, -22.5]],
+    [[1418.5, -352.0], [-68.0, 1135.0], [-181.5, 90.5], [1146.0, -511.0], [-193.0, 340.5], [318.0, -79.5], [544.5, 374.5], [431.0, -182.0], [1078.5, 0.0], [170.0, -170.5], [283.5, -22.5]],
+    [[-840.0, -2383.5], [-828.5, 363.0]],
+    [[-1112.5, -1975.0]],
+    [[0.0,0.0]]
+]
+    
+    Arealist= mylist[zone-1]
+    newAreaIndex = subMapsOf(zone).index(area)
+    returnedList=Arealist[newAreaIndex]
+    return returnedList
 
 def subMapsOfSpecials(i: int)->int: 
     subMaps = {
-        "Sm1": 3,  # "Ancestral Steppe" / "Estepa ancestral"
-        "Sm2": 8,  # "Sunken Hollow" / "Hondonada sumergida"
-        "Sm3": 3,  # "Primal Forest" / "Bosque primigenio"
-        "Sm4": 1,      # "Frozen Seaway (Zamtrios)" / "Paso helado (Zamtrios)"
-        "Sm5": 3,         # "Heaven's Mount" / "Monte cielo"
-        "Sm6": 1,                              # "Great Desert (Dah'ren Mohran)" / "Gran desierto (Dah'ren Mohran)"
-        "Sm7": 1,                              # "Tower Summit" / "Cima de la torre"
-        "Sm8": 1,                              # "Speartip Crag (Dalamadur)" / "Risco de punta de lanza (Dalamadur)"
-        "Sm9": 1,                              # "Ingle Isle" / "Isla Ingel"
-        "Sm10":1,                              # "Castle Schrade" / "Castillo Schrade"
-        "Sm11":1,                              # "Arena" / "Arena"
-        "Sm12":1,                              # "Slayground" / "Arena (2 Pisos)"
-        "Sm13":1,                              # "Everwood" / "Bosque eterno"
-        "Sm14":1,                              # "Great Sea" / "Gran mar"
-        "Sm15": 8, # "Volcanic Hollow" / "Hondonada volcánica"
-        "Sm16": 1,                              # "Sanctuary (Shagaru Magala)" / "Santuario (Shagaru Magala)"
-        "Sm17": 7, # "Dunes (Day)" / "Dunas (Día)"
-        "Sm18": 7, # "Dunes (Night)" / "Dunas (Noche)"
-        "Sm19": 3,                        # "Battlequarters" / "Caserna"
-        "Sm20": 1,                               # "Polar Field (Ukanlos)" / "Campo polar (Ukanlos)"
-        "Sm21": 1,                                # "Great Sea (Storm)" / "Gran mar (Tormenta)"
+        "Sm1": 3,   # "Ancestral Steppe" / "Estepa ancestral"
+        "Sm2": 8,   # "Sunken Hollow" / "Hondonada sumergida"
+        "Sm3": 3,   # "Primal Forest" / "Bosque primigenio"
+        "Sm4": 1,   # "Frozen Seaway (Zamtrios)" / "Paso helado (Zamtrios)"
+        "Sm5": 3,   # "Heaven's Mount" / "Monte cielo"
+        "Sm6": 1,   # "Great Desert (Dah'ren Mohran)" / "Gran desierto (Dah'ren Mohran)"
+        "Sm7": 1,   # "Tower Summit" / "Cima de la torre"
+        "Sm8": 1,   # "Speartip Crag (Dalamadur)" / "Risco de punta de lanza (Dalamadur)"
+        "Sm9": 1,   # "Ingle Isle" / "Isla Ingel"
+        "Sm10":1,   # "Castle Schrade" / "Castillo Schrade"
+        "Sm11":1,   # "Arena" / "Arena"
+        "Sm12":1,   # "Slayground" / "Arena (2 Pisos)"
+        "Sm13":1,   # "Everwood" / "Bosque eterno"
+        "Sm14":1,   # "Great Sea" / "Gran mar"
+        "Sm15": 8,  # "Volcanic Hollow" / "Hondonada volcánica"
+        "Sm16": 1,  # "Sanctuary (Shagaru Magala)" / "Santuario (Shagaru Magala)"
+        "Sm17": 7,  # "Dunes (Day)" / "Dunas (Día)"
+        "Sm18": 7,  # "Dunes (Night)" / "Dunas (Noche)"
+        "Sm19": 3,  # "Battlequarters" / "Caserna"
+        "Sm20": 1,  # "Polar Field (Ukanlos)" / "Campo polar (Ukanlos)"
+        "Sm21": 1,  # "Great Sea (Storm)" / "Gran mar (Tormenta)"
     }
     key = f"Sm{i}"
     return subMaps.get(key,None)
+
 
 
 

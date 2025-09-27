@@ -6,6 +6,8 @@ import struct
 import math
 from pathlib import Path
 
+MONSTER_STRUCT_SIZE = 0x28 # 40 bytes
+
 def getQuestFolder():
     # Get the absolute path of the current script
     script_path = os.path.abspath(__file__)
@@ -511,6 +513,273 @@ def _read_string_utf16le_pairs(buf: bytes, offset: int):
         pos += 2
     return "".join(s)
 
+def unpack_monster_struct(monster_bytes: bytes) -> dict:
+    """Desempaqueta una estructura de monstruo de 0x28 bytes a un diccionario."""
+    if len(monster_bytes) != 0x28:
+        raise ValueError(f"Monster struct must be 0x28 bytes, got {len(monster_bytes)}")
+    monster = {}
+    monster['monster_id'] = struct.unpack_from("<I", monster_bytes, 0x00)[0]
+    monster['qty'] = struct.unpack_from("<I", monster_bytes, 0x04)[0]
+    monster['condition'] = monster_bytes[0x08]
+    monster['area'] = monster_bytes[0x09]
+    monster['crashflag'] = monster_bytes[0x0A]
+    monster['special'] = monster_bytes[0x0B]
+    monster['unk2'] = monster_bytes[0x0C]
+    monster['unk3'] = monster_bytes[0x0D]
+    monster['unk4'] = monster_bytes[0x0E]
+    monster['infection'] = monster_bytes[0x0F]
+    monster['x'] = struct.unpack_from("<f", monster_bytes, 0x10)[0]
+    monster['y'] = struct.unpack_from("<f", monster_bytes, 0x14)[0]
+    monster['z'] = struct.unpack_from("<f", monster_bytes, 0x18)[0]
+    monster['x_rot'] = struct.unpack_from("<I", monster_bytes, 0x1C)[0]
+    monster['y_rot'] = struct.unpack_from("<I", monster_bytes, 0x20)[0]
+    monster['z_rot'] = struct.unpack_from("<I", monster_bytes, 0x24)[0]
+
+    return monster
+
+# ----------------------------
+# Map / Area getters & setters
+# ----------------------------
+def getMap(questFilePath: str) -> int:
+    """
+    Devuelve el map id (byte) leído desde el header dinámico (offset code-relative 0xC4).
+    Resultado en decimal (0..255).
+    """
+    abs_off = get_dynamic_absolute_offset(questFilePath, 0xC4)
+    size = os.path.getsize(questFilePath)
+    if abs_off < 0 or abs_off + 1 > size:
+        raise EOFError(f"getMap: offset 0x{abs_off:X} fuera de rango (size 0x{size:X})")
+    return read_byte(questFilePath, abs_off)
+
+
+def setMap(questFilePath: str, map_id: int):
+    """
+    Escribe el map id (0..255) en el header dinámico (code-relative 0xC4).
+    map_id debe ser un int decimal.
+    """
+    if not (0 <= map_id <= 0xFF):
+        raise ValueError("setMap: map_id debe estar entre 0 y 255")
+    abs_off = get_dynamic_absolute_offset(questFilePath, 0xC4)
+    size = os.path.getsize(questFilePath)
+    if abs_off < 0 or abs_off + 1 > size:
+        raise EOFError(f"setMap: offset 0x{abs_off:X} fuera de rango (size 0x{size:X})")
+    write_byte_at(questFilePath, abs_off, map_id)
+
+
+# Helper genérico: devuelve/pon el byte 'area' dentro de una struct de monstruo absoluta
+def _get_area_at_monster_struct_offset(questFilePath: str, monster_struct_abs_off: int) -> int:
+    size = os.path.getsize(questFilePath)
+    area_byte_off = monster_struct_abs_off + 0x09  # offset dentro de struct
+    if monster_struct_abs_off < 0 or area_byte_off + 1 > size:
+        raise EOFError(f"_get_area_at_monster_struct_offset: offset 0x{monster_struct_abs_off:X} fuera de rango (size 0x{size:X})")
+    return read_byte(questFilePath, area_byte_off)
+
+def _set_area_at_monster_struct_offset(questFilePath: str, monster_struct_abs_off: int, area: int):
+    if not (0 <= area <= 0xFF):
+        raise ValueError("_set_area_at_monster_struct_offset: area debe estar entre 0 y 255")
+    size = os.path.getsize(questFilePath)
+    area_byte_off = monster_struct_abs_off + 0x09
+    if monster_struct_abs_off < 0 or area_byte_off + 1 > size:
+        raise EOFError(f"_set_area_at_monster_struct_offset: offset 0x{monster_struct_abs_off:X} fuera de rango (size 0x{size:X})")
+    write_byte_at(questFilePath, area_byte_off, area)
+
+
+# Large monsters: acceso por (table_index, monster_index)
+def getArea_large(questFilePath: str, table_index: int, monster_index: int) -> int:
+    """
+    Devuelve la 'area' (subzona) del monstruo en la tabla grande:
+      table_index: índice de la tabla top (0-based)
+      monster_index: índice dentro de esa tabla (0-based)
+    Resultado en decimal.
+    """
+    size = os.path.getsize(questFilePath)
+    base_ptr_list_addr = read_dword(questFilePath, 0x28)
+    if base_ptr_list_addr == 0:
+        raise ValueError("getArea_large: large table pointer (0x28) == 0")
+    tables = read_dword_array_until_zero(questFilePath, base_ptr_list_addr)
+    if table_index < 0 or table_index >= len(tables):
+        raise IndexError("getArea_large: table_index fuera de rango")
+    table_addr = tables[table_index]
+    monster_off = table_addr + monster_index * 0x28
+    # comprobar terminador y bounds
+    if monster_off + 4 > size:
+        raise EOFError("getArea_large: monster offset fuera de fichero")
+    mid = read_dword(questFilePath, monster_off)
+    if mid == 0xFFFFFFFF:
+        raise ValueError("getArea_large: monster_index apunta al terminador (0xFFFFFFFF)")
+    return _get_area_at_monster_struct_offset(questFilePath, monster_off)
+
+
+def setArea_large(questFilePath: str, table_index: int, monster_index: int, area: int):
+    """
+    Escribe la 'area' (0..255) para un monstruo de la tabla large.
+    """
+    size = os.path.getsize(questFilePath)
+    base_ptr_list_addr = read_dword(questFilePath, 0x28)
+    if base_ptr_list_addr == 0:
+        raise ValueError("setArea_large: large table pointer (0x28) == 0")
+    tables = read_dword_array_until_zero(questFilePath, base_ptr_list_addr)
+    if table_index < 0 or table_index >= len(tables):
+        raise IndexError("setArea_large: table_index fuera de rango")
+    table_addr = tables[table_index]
+    monster_off = table_addr + monster_index * 0x28
+    if monster_off + 4 > size:
+        raise EOFError("setArea_large: monster offset fuera de fichero")
+    mid = read_dword(questFilePath, monster_off)
+    if mid == 0xFFFFFFFF:
+        raise ValueError("setArea_large: monster_index apunta al terminador (0xFFFFFFFF)")
+    _set_area_at_monster_struct_offset(questFilePath, monster_off, area)
+
+
+# Small monsters: acceso por (top_index, sub_index, monster_index)
+def getArea_small(questFilePath: str, top_index: int, sub_index: int, monster_index: int) -> int:
+    """
+    Devuelve la 'area' para un monstruo en small table.
+      top_index: índice en la top-list (0-based)
+      sub_index: índice en la sub-list dentro del top (0-based)
+      monster_index: índice dentro de esa sub-list (0-based)
+    """
+    base_small_ptr = read_dword(questFilePath, 0x2C)
+    if base_small_ptr == 0:
+        raise ValueError("getArea_small: small table pointer (0x2C) == 0")
+    tops = read_dword_array_until_zero(questFilePath, base_small_ptr)
+    if top_index < 0 or top_index >= len(tops):
+        raise IndexError("getArea_small: top_index fuera de rango")
+    top_addr = tops[top_index]
+    subs = read_dword_array_until_zero(questFilePath, top_addr)
+    if sub_index < 0 or sub_index >= len(subs):
+        raise IndexError("getArea_small: sub_index fuera de rango")
+    sub_addr = subs[sub_index]
+    monster_off = sub_addr + monster_index * 0x28
+    size = os.path.getsize(questFilePath)
+    if monster_off + 4 > size:
+        raise EOFError("getArea_small: monster offset fuera de fichero")
+    mid = read_dword(questFilePath, monster_off)
+    if mid == 0xFFFFFFFF:
+        raise ValueError("getArea_small: monster_index apunta al terminador (0xFFFFFFFF)")
+    return _get_area_at_monster_struct_offset(questFilePath, monster_off)
+
+
+def setArea_small(questFilePath: str, top_index: int, sub_index: int, monster_index: int, area: int):
+    """
+    Escribe la 'area' para un monstruo en small table.
+    """
+    base_small_ptr = read_dword(questFilePath, 0x2C)
+    if base_small_ptr == 0:
+        raise ValueError("setArea_small: small table pointer (0x2C) == 0")
+    tops = read_dword_array_until_zero(questFilePath, base_small_ptr)
+    if top_index < 0 or top_index >= len(tops):
+        raise IndexError("setArea_small: top_index fuera de rango")
+    top_addr = tops[top_index]
+    subs = read_dword_array_until_zero(questFilePath, top_addr)
+    if sub_index < 0 or sub_index >= len(subs):
+        raise IndexError("setArea_small: sub_index fuera de rango")
+    sub_addr = subs[sub_index]
+    monster_off = sub_addr + monster_index * 0x28
+    size = os.path.getsize(questFilePath)
+    if monster_off + 4 > size:
+        raise EOFError("setArea_small: monster offset fuera de fichero")
+    mid = read_dword(questFilePath, monster_off)
+    if mid == 0xFFFFFFFF:
+        raise ValueError("setArea_small: monster_index apunta al terminador (0xFFFFFFFF)")
+    _set_area_at_monster_struct_offset(questFilePath, monster_off, area)
+
+
+# Unstable table: acceso por índice (0-based)
+def getArea_unstable(questFilePath: str, unstable_index: int) -> int:
+    """
+    Devuelve la 'area' del monstruo en unstable table por índice.
+    """
+    base_unstable = read_dword(questFilePath, 0x30)
+    if base_unstable == 0:
+        raise ValueError("getArea_unstable: unstable table pointer (0x30) == 0")
+    entry_off = base_unstable + unstable_index * 0x2C
+    size = os.path.getsize(questFilePath)
+    if entry_off + 4 > size:
+        raise EOFError("getArea_unstable: entrada fuera de fichero")
+    chance = read_word(questFilePath, entry_off)
+    if chance == 0xFFFF:
+        raise ValueError("getArea_unstable: entrada terminadora (0xFFFF)")
+    monster_off = entry_off + 4
+    if monster_off + 4 > size:
+        raise EOFError("getArea_unstable: monster struct fuera de fichero")
+    return _get_area_at_monster_struct_offset(questFilePath, monster_off)
+
+
+def setArea_unstable(questFilePath: str, unstable_index: int, area: int):
+    """
+    Escribe la 'area' en unstable table por índice.
+    """
+    base_unstable = read_dword(questFilePath, 0x30)
+    if base_unstable == 0:
+        raise ValueError("setArea_unstable: unstable table pointer (0x30) == 0")
+    entry_off = base_unstable + unstable_index * 0x2C
+    size = os.path.getsize(questFilePath)
+    if entry_off + 4 > size:
+        raise EOFError("setArea_unstable: entrada fuera de fichero")
+    chance = read_word(questFilePath, entry_off)
+    if chance == 0xFFFF:
+        raise ValueError("setArea_unstable: entrada terminadora (0xFFFF)")
+    monster_off = entry_off + 4
+    if monster_off + 4 > size:
+        raise EOFError("setArea_unstable: monster struct fuera de fichero")
+    _set_area_at_monster_struct_offset(questFilePath, monster_off, area)
+
+
+
+
+def expand_large_monster_table(questFilePath: str, table_index: int = 0, new_monster_id: int = 1):
+    if not os.path.exists(questFilePath):
+        raise FileNotFoundError(f"File not found: {questFilePath}")
+    # 1. Obtener las direcciones de las tablas de monstruos grandes
+    base_ptr_list_addr = read_dword(questFilePath, 0x28)
+    table_addresses = read_dword_array_until_zero(questFilePath, base_ptr_list_addr)
+    if table_index >= len(table_addresses):
+        raise IndexError(f"Table index {table_index} out of range. Available tables: {len(table_addresses)}")
+    current_table_addr = table_addresses[table_index]
+    # 2. Leer todos los monstruos de la tabla actual (hasta encontrar 0xFFFFFFFF)
+    monsters = []
+    idx = 0
+    while True:
+        offset = current_table_addr + idx * 0x28
+        monster_id = read_dword(questFilePath, offset)
+        if monster_id == 0xFFFFFFFF:
+            break
+        # Leer la estructura completa del monstruo
+        monster_data = _read_bytes(questFilePath, offset, 0x28)
+        monsters.append(monster_data)
+        idx += 1
+        # Límite de seguridad
+        if idx > 1000:
+            break
+    if len(monsters) == 0:
+        raise ValueError("No monsters found in the specified table")
+    # 3. Crear nuevo monstruo copiando el primero pero con nueva ID
+    first_monster = monsters[0]
+    # Desempaquetar la estructura para modificar el monster_id
+    monster_dict = unpack_monster_struct(first_monster)
+    monster_dict['monster_id'] = new_monster_id
+    # 4. Crear el nuevo array de monstruos
+    new_table_data = b''
+    # Añadir todos los monstruos originales
+    for monster in monsters:
+        new_table_data += monster
+    # Añadir el nuevo monstruo
+    new_table_data += pack_monster_struct(monster_dict)
+    # Añadir terminador
+    new_table_data += struct.pack("<I", 0xFFFFFFFF)
+    # 5. Escribir la nueva tabla al final del archivo (alineado)
+    new_table_addr = append_aligned(questFilePath, new_table_data)
+    # 6. Actualizar el puntero en la top-table
+    # La top-table está en base_ptr_list_addr, y cada entrada son 4 bytes
+    pointer_offset = base_ptr_list_addr + table_index * 4
+    write_dword_at(questFilePath, pointer_offset, new_table_addr)
+    print(f"[SUCCESS] Expanded large monster table {table_index}")
+    print(f"          Original table at: 0x{current_table_addr:X}")
+    print(f"          New table at: 0x{new_table_addr:X}")
+    print(f"          Added monster with ID: 0x{new_monster_id:X}")
+    print(f"          Total monsters in table: {len(monsters) + 1}")
+    return new_table_addr
 # parse helpers for structures
 def _parse_monster_from_buf(buf: bytes, offset: int):
     m = {}
@@ -533,6 +802,169 @@ def _parse_monster_from_buf(buf: bytes, offset: int):
     return m
 
 
+# ----------------------------
+# Find instances + get positions
+# ----------------------------
+def find_monster_instances(path: str, monster_id: int):
+    """
+    Busca todas las apariciones del monster_id en:
+      - large tables (top-list en 0x28 -> array de punteros a arrays de structs)
+      - small tables (top-list en 0x2C -> array de punteros a tops -> punteros a arrays de structs)
+      - unstable table (puntero en 0x30, stride 0x2C)
+    Devuelve lista de dicts con:
+      { 'type': 'large'|'small'|'unstable',
+        'table_index': int or None,
+        'sub_index': int or None,
+        'monster_index': int,
+        'struct_offset': absolute_offset,
+        'x': float, 'y': float, 'z': float }
+    """
+    size = os.path.getsize(path)
+    results = []
+
+    # --- large tables ---
+    try:
+        lbase = read_dword(path, 0x28)
+    except Exception:
+        lbase = 0
+    if lbase != 0 and 0 <= lbase < size:
+        top_addrs = read_dword_array_until_zero(path, lbase)
+        for t_idx, table_addr in enumerate(top_addrs):
+            if table_addr == 0 or table_addr >= size:
+                continue
+            idx = 0
+            while True:
+                off = table_addr + idx * 0x28
+                if off + 4 > size:
+                    # fin por archivo
+                    break
+                mid = read_dword(path, off)
+                if mid == 0xFFFFFFFF:
+                    break
+                if mid == monster_id:
+                    # leer coords
+                    x = read_float(path, off + 0x10)
+                    y = read_float(path, off + 0x14)
+                    z = read_float(path, off + 0x18)
+                    results.append({
+                        'type': 'large',
+                        'table_index': t_idx,
+                        'sub_index': None,
+                        'monster_index': idx,
+                        'struct_offset': off,
+                        'x': x, 'y': y, 'z': z
+                    })
+                idx += 1
+                if idx > 2000:
+                    break
+
+    # --- small tables (dos niveles) ---
+    try:
+        sbase = read_dword(path, 0x2C)
+    except Exception:
+        sbase = 0
+    if sbase != 0 and 0 <= sbase < size:
+        top_ptrs = read_dword_array_until_zero(path, sbase)
+        for top_idx, top_addr in enumerate(top_ptrs):
+            if top_addr == 0 or top_addr >= size:
+                continue
+            sub_ptrs = read_dword_array_until_zero(path, top_addr)
+            for sub_idx, sub_addr in enumerate(sub_ptrs):
+                if sub_addr == 0 or sub_addr >= size:
+                    continue
+                idx = 0
+                while True:
+                    off = sub_addr + idx * 0x28
+                    if off + 4 > size:
+                        break
+                    mid = read_dword(path, off)
+                    if mid == 0xFFFFFFFF:
+                        break
+                    if mid == monster_id:
+                        x = read_float(path, off + 0x10)
+                        y = read_float(path, off + 0x14)
+                        z = read_float(path, off + 0x18)
+                        results.append({
+                            'type': 'small',
+                            'table_index': top_idx,
+                            'sub_index': sub_idx,
+                            'monster_index': idx,
+                            'struct_offset': off,
+                            'x': x, 'y': y, 'z': z
+                        })
+                    idx += 1
+                    if idx > 2000:
+                        break
+
+    # --- unstable table ---
+    try:
+        ubase = read_dword(path, 0x30)
+    except Exception:
+        ubase = 0
+    if ubase != 0 and 0 <= ubase < size:
+        idx = 0
+        while True:
+            entry_off = ubase + idx * 0x2C
+            if entry_off + 2 > size:
+                break
+            chance = read_word(path, entry_off)
+            if chance == 0xFFFF:
+                break
+            monster_off = entry_off + 4
+            if monster_off + 4 > size:
+                break
+            mid = read_dword(path, monster_off)
+            if mid == monster_id:
+                x = read_float(path, monster_off + 0x10)
+                y = read_float(path, monster_off + 0x14)
+                z = read_float(path, monster_off + 0x18)
+                results.append({
+                    'type': 'unstable',
+                    'table_index': None,
+                    'sub_index': idx,
+                    'monster_index': None,
+                    'struct_offset': monster_off,
+                    'x': x, 'y': y, 'z': z
+                })
+            idx += 1
+            if idx > 2000:
+                break
+
+    return results
+
+def set_monster_position_by_id(path: str, monster_id: int, new_x=None, new_z=None, apply_to='all'):
+    """
+    Cambia la posición X/Z de las apariciones del monster_id.
+    - new_x, new_z: float o None (None = no tocar esa coordenada).
+    - apply_to: 'all' para cambiar todas las apariciones, 'first' para sólo la primera encontrada.
+    Devuelve número de posiciones modificadas.
+    """
+    if new_x is None and new_z is None:
+        return 0
+    inst = find_monster_instances(path, monster_id)
+    if not inst:
+        print(f"[INFO] No se encontraron apariciones de monster_id {monster_id}")
+        return 0
+
+    updated = 0
+    for entry in inst:
+        off = entry['struct_offset']
+        # seguridad: comprobar que tenemos espacio para escribir floats
+        size = os.path.getsize(path)
+        if off + 0x18 + 4 > size:  # z float at off+0x18
+            print(f"[WARN] struct en 0x{off:X} demasiado cerca del EOF, salto")
+            continue
+        if new_x is not None:
+            write_float_at(path, off + 0x10, float(new_x))
+        if new_z is not None:
+            write_float_at(path, off + 0x18, float(new_z))
+        updated += 1
+        print(f"[WRITE] updated {entry['type']} at 0x{off:X} -> x={new_x if new_x is not None else entry['x']}, z={new_z if new_z is not None else entry['z']}")
+        if apply_to == 'first':
+            break
+
+    print(f"[INFO] posiciones actualizadas: {updated}")
+    return updated
 
 
 
@@ -592,6 +1024,7 @@ def parse_mib(path: str) -> dict:
             s.append(chr(w))
             pos += 2
         return "".join(s)
+    
 
     def parse_monster_local(off: int):
         # ensure full monster struct is inside buffer
@@ -881,6 +1314,7 @@ def parse_mib(path: str) -> dict:
     return q
 
 
+
 def pretty_print_quest_summary(path: str):
     """Pretty print using the self-contained parse_mib above."""
     try:
@@ -908,6 +1342,117 @@ def pretty_print_quest_summary(path: str):
     print("=====================")
 
 # === END: standalone parse_mib + pretty_print_quest_summary ===
+def find_and_replace_monster_individual(path: str, old_monster_id: int, new_monster_id: int, dry_run: bool = False):
+    """
+    Versión CORREGIDA: Reemplaza solo UN monstruo a la vez, PERO busca en TODAS las tablas.
+    """
+    replaced = 0
+    size = os.path.getsize(path)
+    found_and_replaced = False  # Bandera para controlar si ya reemplazamos uno
+
+    # --- large monsters ---
+    base_list = get_large_monster_table_addresses(path)
+    for table_idx, a in enumerate(base_list):
+        if a == 0 or a < 0 or a >= size:
+            continue
+        idx = 0
+        while True:
+            off = a + idx * 0x28
+            if off + 4 > size:
+                break
+            mid = read_dword(path, off)
+            if mid == 0xFFFFFFFF:
+                break
+            if mid == old_monster_id and not found_and_replaced:  # Solo si no hemos reemplazado aún
+                if dry_run:
+                    print(f"[DRY] would replace large at 0x{off:X} ({hex(mid)}) -> {hex(new_monster_id)}")
+                else:
+                    write_dword_at(path, off, new_monster_id)
+                    print(f"[WRITE] replaced large at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
+                    replaced += 1
+                    found_and_replaced = True  # Marcamos que ya reemplazamos uno
+                    # NO hacemos return aquí, continuamos buscando en otras tablas
+                # Si ya reemplazamos, salimos de este bucle while pero continuamos con otras tablas
+                if found_and_replaced:
+                    break
+            idx += 1
+            if idx > 1000:
+                break
+        if found_and_replaced:
+            break  # Salimos del bucle de tablas grandes
+
+    # Si ya reemplazamos, no buscamos en small monsters
+    if not found_and_replaced:
+        # --- small monsters: nested tables ---
+        base_small_ptr = read_dword(path, 0x2C)
+        if base_small_ptr != 0:
+            top_ptrs = read_dword_array_until_zero(path, base_small_ptr)
+            for top_idx, top in enumerate(top_ptrs):
+                if top == 0 or top < 0 or top >= size:
+                    continue
+                sub_ptrs = read_dword_array_until_zero(path, top)
+                for sub_idx, addr in enumerate(sub_ptrs):
+                    if addr == 0 or addr < 0 or addr >= size:
+                        continue
+                    idx = 0
+                    while True:
+                        off = addr + idx * 0x28
+                        if off + 4 > size:
+                            break
+                        mid = read_dword(path, off)
+                        if mid == 0xFFFFFFFF:
+                            break
+                        if mid == old_monster_id and not found_and_replaced:
+                            if dry_run:
+                                print(f"[DRY] would replace small at 0x{off:X} ({hex(mid)})")
+                            else:
+                                write_dword_at(path, off, new_monster_id)
+                                print(f"[WRITE] replaced small at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
+                                replaced += 1
+                                found_and_replaced = True
+                            if found_and_replaced:
+                                break
+                        idx += 1
+                        if idx > 1000:
+                            break
+                    if found_and_replaced:
+                        break
+                if found_and_replaced:
+                    break
+
+    # Si ya reemplazamos, no buscamos en unstable
+    if not found_and_replaced:
+        # --- unstable table ---
+        base_unstable = read_dword(path, 0x30)
+        if base_unstable != 0:
+            idx = 0
+            while True:
+                entry_off = base_unstable + idx * 0x2C
+                if entry_off + 2 > size:
+                    break
+                chance = read_word(path, entry_off)
+                if chance == 0xFFFF:
+                    break
+                off = entry_off + 4
+                if off + 4 > size:
+                    break
+                mid = read_dword(path, off)
+                if mid == old_monster_id and not found_and_replaced:
+                    if dry_run:
+                        print(f"[DRY] would replace unstable at 0x{off:X} ({hex(mid)})")
+                    else:
+                        write_dword_at(path, off, new_monster_id)
+                        print(f"[WRITE] replaced unstable at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
+                        replaced += 1
+                        found_and_replaced = True
+                    if found_and_replaced:
+                        break
+                idx += 1
+                if idx > 1000:
+                    break
+
+    print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
+    return replaced
 
 # ---------- FIND AND REPLACE MONSTER ----------
 def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int, dry_run: bool = False):
@@ -1128,9 +1673,9 @@ def verify_tables(path: str, verbose: bool = True):
 # Example: set a header flag bit (e.g. set intruder_flag bit1 at code-relative 0xA1):
 #   set_header_flag_bit("path.mib", 0xA1, 1, True)
 #
-# Example: change the first monster in large table 0 to Rathalos (monster id 0x12345678):
+# Example: change the first monster in large table 0 to Rathalos (monster id 0x1):
 #   write_monster_in_large_table("path.mib", table_index=0, monster_index=0,
-#       monster={"monster_id": 0x12345678, "qty":1, "area":1, "x":0.0, "y":0.0, "z":0.0})
+#       monster={"monster_id": 0x1, "qty":1, "area":1, "x":0.0, "y":0.0, "z":0.0})
 #
 # Example: set refill 0:
 #   set_refill_entry("path.mib", 0, box=1, condition=0, monster=5, qty=3)
@@ -1138,7 +1683,188 @@ def verify_tables(path: str, verbose: bool = True):
 # Example: set small monster condition 0 target to monster id 0x20 and qty 5:
 #   set_small_monster_condition("path.mib", 0, type_val=1, target=0x20, qty=5, group=0)
 #
-# === END: add this to QuestEditor.py ===
+
+import os
+
+# ----------------------------
+# Helpers internos
+# ----------------------------
+MONSTER_STRUCT_SIZE = 0x28  # 40 bytes
+
+def _is_valid_ptr_in_file(path: str, addr: int) -> bool:
+    if addr == 0:
+        return False
+    size = os.path.getsize(path)
+    return 0 <= addr < size
+
+# ----------------------------
+# Large table: get / set by indices
+# ----------------------------
+def get_large_monster_by_indices(path: str, top_index: int, monster_index: int):
+    """
+    Devuelve dict con info del monster struct apuntado por:
+      base = read_dword(path, 0x28)  # top-list
+      table_addr = top_list[top_index]
+      struct_offset = table_addr + monster_index * 0x28
+
+    Si inválido o fuera de rango devuelve None.
+    Resultado:
+      {
+        'table_addr': int,
+        'struct_offset': int,
+        'monster_id': int,
+        'x': float, 'y': float, 'z': float,
+        'monster_index': int, 'top_index': int
+      }
+    """
+    size = os.path.getsize(path)
+    # leer base top-list
+    try:
+        lbase = read_dword(path, 0x28)
+    except Exception as e:
+        return None
+    if not _is_valid_ptr_in_file(path, lbase):
+        return None
+
+    # leer array de punteros hasta cero
+    top_ptrs = read_dword_array_until_zero(path, lbase)
+    if top_index < 0 or top_index >= len(top_ptrs):
+        return None
+    table_addr = top_ptrs[top_index]
+    if not _is_valid_ptr_in_file(path, table_addr):
+        return None
+
+    struct_off = table_addr + monster_index * MONSTER_STRUCT_SIZE
+    # comprobaciones de seguridad
+    if struct_off + 4 > size:
+        return None
+    mid = read_dword(path, struct_off)
+    if mid == 0xFFFFFFFF:
+        return None
+
+    # asegurar que todo el struct está dentro
+    if struct_off + MONSTER_STRUCT_SIZE > size:
+        return None
+
+    x = read_float(path, struct_off + 0x10)
+    y = read_float(path, struct_off + 0x14)
+    z = read_float(path, struct_off + 0x18)
+
+    return {
+        'table_addr': table_addr,
+        'struct_offset': struct_off,
+        'monster_id': mid,
+        'x': x, 'y': y, 'z': z,
+        'monster_index': monster_index,
+        'top_index': top_index
+    }
+
+def set_large_monster_position_by_indices(path: str, top_index: int, monster_index: int, new_x=None, new_z=None):
+    """
+    Escribe new_x/new_z (floats) en el struct indicado. Devuelve True si escribió al menos 1 valor.
+    Si new_x o new_z es None, esa coordenada no se modifica.
+    """
+    info = get_large_monster_by_indices(path, top_index, monster_index)
+    if info is None:
+        print(f"[WARN] get_large_monster_by_indices devolvió None para top={top_index} idx={monster_index}")
+        return False
+
+    off = info['struct_offset']
+    size = os.path.getsize(path)
+    # seguridad: comprobar espacio para escribir floats (x en off+0x10, z en off+0x18)
+    if off + 0x18 + 4 > size:
+        print(f"[WARN] struct en 0x{off:X} demasiado cerca del EOF, no se escribe")
+        return False
+
+    if new_x is not None:
+        write_float_at(path, off + 0x10, float(new_x))
+    if new_z is not None:
+        write_float_at(path, off + 0x18, float(new_z))
+    print(f"[WRITE] Large(top={top_index},idx={monster_index}) @0x{off:X} -> x={new_x if new_x is not None else info['x']}, z={new_z if new_z is not None else info['z']}")
+    return True
+
+# ----------------------------
+# Small table (nested): get / set by indices
+# ----------------------------
+def get_small_monster_by_indices(path: str, top_index: int, sub_index: int, monster_index: int):
+    """
+    Acceso a small tables:
+      base = read_dword(path, 0x2C)  # top-list
+      top_addr = top_list[top_index]
+      sub_ptrs = read_dword_array_until_zero(path, top_addr)
+      table_addr = sub_ptrs[sub_index]
+      struct_offset = table_addr + monster_index * 0x28
+
+    Devuelve dict (similar al de get_large_monster_by_indices) o None si inválido.
+    """
+    size = os.path.getsize(path)
+    try:
+        sbase = read_dword(path, 0x2C)
+    except Exception:
+        return None
+    if not _is_valid_ptr_in_file(path, sbase):
+        return None
+
+    top_ptrs = read_dword_array_until_zero(path, sbase)
+    if top_index < 0 or top_index >= len(top_ptrs):
+        return None
+    top_addr = top_ptrs[top_index]
+    if not _is_valid_ptr_in_file(path, top_addr):
+        return None
+
+    sub_ptrs = read_dword_array_until_zero(path, top_addr)
+    if sub_index < 0 or sub_index >= len(sub_ptrs):
+        return None
+    table_addr = sub_ptrs[sub_index]
+    if not _is_valid_ptr_in_file(path, table_addr):
+        return None
+
+    struct_off = table_addr + monster_index * MONSTER_STRUCT_SIZE
+    if struct_off + 4 > size:
+        return None
+    mid = read_dword(path, struct_off)
+    if mid == 0xFFFFFFFF:
+        return None
+    if struct_off + MONSTER_STRUCT_SIZE > size:
+        return None
+
+    x = read_float(path, struct_off + 0x10)
+    y = read_float(path, struct_off + 0x14)
+    z = read_float(path, struct_off + 0x18)
+
+    return {
+        'top_addr': top_addr,
+        'table_addr': table_addr,
+        'struct_offset': struct_off,
+        'monster_id': mid,
+        'x': x, 'y': y, 'z': z,
+        'monster_index': monster_index,
+        'top_index': top_index,
+        'sub_index': sub_index
+    }
+
+def set_small_monster_position_by_indices(path: str, top_index: int, sub_index: int, monster_index: int, new_x=None, new_z=None):
+    """
+    Escribe new_x/new_z en un monstruo de la tabla small identificada por (top_index, sub_index, monster_index).
+    Devuelve True si escribió correctamente.
+    """
+    info = get_small_monster_by_indices(path, top_index, sub_index, monster_index)
+    if info is None:
+        print(f"[WARN] get_small_monster_by_indices devolvió None para top={top_index}, sub={sub_index}, idx={monster_index}")
+        return False
+
+    off = info['struct_offset']
+    size = os.path.getsize(path)
+    if off + 0x18 + 4 > size:
+        print(f"[WARN] struct en 0x{off:X} demasiado cerca del EOF, no se escribe")
+        return False
+
+    if new_x is not None:
+        write_float_at(path, off + 0x10, float(new_x))
+    if new_z is not None:
+        write_float_at(path, off + 0x18, float(new_z))
+    print(f"[WRITE] Small(top={top_index},sub={sub_index},idx={monster_index}) @0x{off:X} -> x={new_x if new_x is not None else info['x']}, z={new_z if new_z is not None else info['z']}")
+    return True
 
 
 
