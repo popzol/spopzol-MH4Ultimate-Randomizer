@@ -1,7 +1,7 @@
 # spopzol-MH4Ultimate-Randomizer 🎲🐉
 
 A **randomizer for Monster Hunter 4 Ultimate** that modifies multiple parameters.  
-Designed to work with **Citra mods** or real 3DS hardware without touching your original ROM.
+Designed to work with **Citra mods** without touching your original ROM.
 
 
 ## 🌱 Progress 
@@ -23,7 +23,7 @@ Designed to work with **Citra mods** or real 3DS hardware without touching your 
   - Many settings
   - Robust Quest Monster Randomizer (Priority)
   - Armor Skills and appearance Randomizer
-- 🛠 Works with **Citra mods** and real hardware.
+- 🛠 Works with **Citra mods**.
 - 📂 Portable — run everything from a single folder.
 - ⚡ Automatic
 
