@@ -188,6 +188,50 @@ def set_objective_qty(questFilePath: str, objective_index: int, qty: int):
     # qty is a word inside objective struct at offset +6 in parse_objective
     write_word_at(questFilePath, base_off + 6, qty)
 
+
+    # ----- Objective helpers (añadir en py, en la zona de header helpers) -----
+_OBJECTIVE_BASES = {0: 0xCC, 1: 0xD4, 2: 0xDC}
+
+def get_header_offset_dynamic(questFilePath: str) -> int:
+    header_addr = read_dword(questFilePath, 0x00)
+    return header_addr - 0xA0
+
+def set_objective(questFilePath: str, index: int, type_val: int, target_id: int, qty: int):
+    if index not in _OBJECTIVE_BASES:
+        raise IndexError("set_objective: index must be 0,1 or 2")
+    header_off = get_header_offset_dynamic(questFilePath)
+    base = header_off + _OBJECTIVE_BASES[index]
+    size = os.path.getsize(questFilePath)
+    if base < 0 or base + 8 > size:
+        raise EOFError(f"set_objective: header objective {index} outside file bounds (off 0x{base:X}, size 0x{size:X})")
+    # type = dword, target_id = word, qty = word
+    write_dword_at(questFilePath, base, int(type_val) & 0xFFFFFFFF)
+    write_word_at(questFilePath, base + 4, int(target_id) & 0xFFFF)
+    write_word_at(questFilePath, base + 6, int(qty) & 0xFFFF)
+
+def get_objective(questFilePath: str, index: int):
+    if index not in _OBJECTIVE_BASES:
+        raise IndexError("get_objective: index must be 0,1 or 2")
+    header_off = get_header_offset_dynamic(questFilePath)
+    base = header_off + _OBJECTIVE_BASES[index]
+    size = os.path.getsize(questFilePath)
+    if base < 0 or base + 8 > size:
+        raise EOFError("get_objective: fuera de fichero")
+    t = read_dword(questFilePath, base)
+    targ = read_word(questFilePath, base + 4)
+    q = read_word(questFilePath, base + 6)
+    return {'type': t, 'target_id': targ, 'qty': q}
+
+def set_objective_amount(questFilePath: str, amount: int):
+    if not (0 <= amount <= 0xFF):
+        raise ValueError("set_objective_amount: amount must be 0..255")
+    header_off = get_header_offset_dynamic(questFilePath)
+    off = header_off + 0xCB
+    size = os.path.getsize(questFilePath)
+    if off < 0 or off + 1 > size:
+        raise EOFError("set_objective_amount: fuera de fichero")
+    write_byte_at(questFilePath, off, amount)
+
 # ----- Refills (absolute offsets in JS: 0x0C + 8*i) -----
 def set_refill_entry(questFilePath: str, index: int, box: int, condition: int, monster: int, qty: int):
     """
@@ -500,18 +544,6 @@ def _read_dword_array_until_zero(buf: bytes, offset: int):
         pos += 4
     return arr
 
-def _read_string_utf16le_pairs(buf: bytes, offset: int):
-    """Read string encoded as 2-byte words until 0x0000 terminator. Each word is a codepoint."""
-    s = []
-    pos = offset
-    size = len(buf)
-    while pos + 2 <= size:
-        w = _read_word(buf, pos)
-        if w == 0:
-            break
-        s.append(chr(w))
-        pos += 2
-    return "".join(s)
 
 def unpack_monster_struct(monster_bytes: bytes) -> dict:
     """Desempaqueta una estructura de monstruo de 0x28 bytes a un diccionario."""
@@ -966,8 +998,179 @@ def set_monster_position_by_id(path: str, monster_id: int, new_x=None, new_z=Non
     print(f"[INFO] posiciones actualizadas: {updated}")
     return updated
 
+# ----------------------------
+# OBJECTIVE HELPERS (INSERT INTO QuestEditor.py)
+# ----------------------------
+# Dependencies: get_dynamic_absolute_offset, read_byte, read_word, read_dword,
+# write_byte_at, write_word_at, write_dword_at, os.path.getsize
 
 
+def _objective_slot_abs_off(path: str, slot_index: int) -> int:
+    """
+    Return absolute offset of objective slot.
+    slot_index: 0 -> header code-relative 0xCC
+                1 -> header code-relative 0xD4
+    Each objective struct layout (8 bytes): type:dword @ +0, target:word @ +4, qty:word @ +6
+    """
+    if slot_index not in (0, 1):
+        raise IndexError("slot_index must be 0 or 1")
+    code_rel = 0xCC + (slot_index * 0x08)
+    return get_dynamic_absolute_offset(path, code_rel)
+
+
+def read_objective_slot(path: str, slot_index: int) -> dict:
+    """
+    Read objective slot and return dict {'type': int, 'target': int, 'qty': int}.
+    Raises EOFError when header area is out of file bounds.
+    """
+    abs_off = _objective_slot_abs_off(path, slot_index)
+    size = os.path.getsize(path)
+    if abs_off < 0 or abs_off + 8 > size:
+        raise EOFError(f"read_objective_slot: offset 0x{abs_off:X} out of range (size 0x{size:X})")
+    type_v = read_dword(path, abs_off)
+    target = read_word(path, abs_off + 4)
+    qty = read_word(path, abs_off + 6)
+    return {'type': type_v, 'target': target, 'qty': qty}
+
+
+def write_objective_slot(path: str, slot_index: int, type_val: int, target_id: int, qty: int):
+    """
+    Write objective struct (type:dword, target:word, qty:word) into slot 0 or 1.
+    """
+    abs_off = _objective_slot_abs_off(path, slot_index)
+    size = os.path.getsize(path)
+    if abs_off < 0 or abs_off + 8 > size:
+        raise EOFError(f"write_objective_slot: offset 0x{abs_off:X} out of range (size 0x{size:X})")
+    write_dword_at(path, abs_off, int(type_val) & 0xFFFFFFFF)
+    write_word_at(path, abs_off + 4, int(target_id) & 0xFFFF)
+    write_word_at(path, abs_off + 6, int(qty) & 0xFFFF)
+
+
+def clear_objective_slot(path: str, slot_index: int):
+    """Clear objective slot (type=0,target=0,qty=0)."""
+    write_objective_slot(path, slot_index, 0, 0, 0)
+
+
+def get_objective_amount(path: str) -> int:
+    """Read objective_amount byte at header_offset + 0xCB and return decimal."""
+    abs_off = get_dynamic_absolute_offset(path, 0xCB)
+    size = os.path.getsize(path)
+    if abs_off < 0 or abs_off + 1 > size:
+        raise EOFError(f"get_objective_amount: offset 0x{abs_off:X} out of range (size 0x{size:X})")
+    return read_byte(path, abs_off)
+
+
+def set_objective_amount(path: str, amount: int):
+    """Write objective_amount byte (0..255)."""
+    if amount < 0 or amount > 255:
+        raise ValueError("amount out of range")
+    abs_off = get_dynamic_absolute_offset(path, 0xCB)
+    size = os.path.getsize(path)
+    if abs_off < 0 or abs_off + 1 > size:
+        raise EOFError(f"set_objective_amount: offset 0x{abs_off:X} out of range (size 0x{size:X})")
+    write_byte_at(path, abs_off, int(amount) & 0xFF)
+
+
+def push_objective_recent(path: str, monster_id: int, type_val: int = 1, qty: int = 1,
+                          duplicate_policy: str = "increment_if_same"):
+    """
+    Push-style objective updater. Call this for each monster while iterating.
+
+    Behavior:
+      - If no objectives yet -> write monster into slot0 (objective_count=1).
+      - If only slot0 exists:
+           * if same monster: increment slot0.qty by `qty`.
+           * else: place incoming monster into slot1 (objective_count=2).
+      - If both slots exist:
+           * if incoming == slot1.target -> increment slot1.qty by `qty`.
+           * elif incoming == slot0.target -> increment slot0.qty by `qty`.
+           * else -> shift: slot0 := old slot1, slot1 := incoming (qty as provided).
+    Parameters:
+      path            : quest file path
+      monster_id      : monster id (int)
+      type_val        : objective type (dword) to use for newly created slots (existing slot types are preserved on increment)
+      qty             : integer to add for the objective quantity (usually 1)
+      duplicate_policy: "increment_if_same" (default) -> when incoming equals an existing slot, increment that slot.
+                        "ignore_if_same_as_last" -> ignore incoming if equals current slot1.
+                        "no_duplicates" -> avoid having same monster in both slots; if would happen, merge into one slot.
+    Returns:
+      (new_amount, info)
+      info is a tuple ((slot0_target, slot0_qty), (slot1_target, slot1_qty))
+    """
+    # safety normalize inputs
+    monster_id = int(monster_id) & 0xFFFF
+    add_qty = max(0, int(qty))
+
+    # clamp helper for word range
+    def _clamp_word(v):
+        if v < 0:
+            return 0
+        if v > 0xFFFF:
+            return 0xFFFF
+        return int(v)
+
+    # read current objective state
+    cur0 = read_objective_slot(path, 0)
+    cur1 = read_objective_slot(path, 1)
+    old0_id = int(cur0.get('target', 0))
+    old0_qty = int(cur0.get('qty', 0))
+    old1_id = int(cur1.get('target', 0))
+    old1_qty = int(cur1.get('qty', 0))
+
+    # policy: ignore if same as last (slot1)
+    if duplicate_policy == "ignore_if_same_as_last" and monster_id == old1_id:
+        return (get_objective_amount(path), ((old0_id, old0_qty), (old1_id, old1_qty)))
+
+    # CASE: no objectives => place in slot0
+    if old0_id == 0 and old1_id == 0:
+        write_objective_slot(path, 0, type_val, monster_id, _clamp_word(add_qty))
+        clear_objective_slot(path, 1)
+        set_objective_amount(path, 1)
+        return (1, ((monster_id, _clamp_word(add_qty)), (0, 0)))
+
+    # CASE: only slot0 exists
+    if old0_id != 0 and old1_id == 0:
+        if monster_id == old0_id:
+            # same monster -> increment slot0 qty
+            new_qty = _clamp_word(old0_qty + add_qty)
+            write_objective_slot(path, 0, cur0.get('type', type_val), old0_id, new_qty)
+            set_objective_amount(path, 1)
+            return (1, ((old0_id, new_qty), (0, 0)))
+        else:
+            # different -> place in slot1
+            write_objective_slot(path, 1, type_val, monster_id, _clamp_word(add_qty))
+            set_objective_amount(path, 2)
+            return (2, ((old0_id, old0_qty), (monster_id, _clamp_word(add_qty))))
+
+    # CASE: both slots exist
+    # If incoming equals slot1 -> increment slot1
+    if monster_id == old1_id:
+        new_qty = _clamp_word(old1_qty + add_qty)
+        write_objective_slot(path, 1, cur1.get('type', type_val), old1_id, new_qty)
+        set_objective_amount(path, 2)
+        return (2, ((old0_id, old0_qty), (old1_id, new_qty)))
+
+    # If incoming equals slot0 -> increment slot0 (don't disturb slot1)
+    if monster_id == old0_id:
+        new_qty = _clamp_word(old0_qty + add_qty)
+        write_objective_slot(path, 0, cur0.get('type', type_val), old0_id, new_qty)
+        set_objective_amount(path, 2)
+        return (2, ((old0_id, new_qty), (old1_id, old1_qty)))
+
+    # Otherwise shift: new slot0 = old slot1, new slot1 = incoming
+    # preserve old1 type/qty
+    write_objective_slot(path, 0, cur1.get('type', type_val), old1_id, _clamp_word(old1_qty))
+    write_objective_slot(path, 1, type_val, monster_id, _clamp_word(add_qty))
+    set_objective_amount(path, 2)
+    return (2, ((old1_id, old1_qty), (monster_id, _clamp_word(add_qty))))
+
+def clear_all_objectives(path: str):
+    """
+    Reset quest objectives: clears both slots and sets amount=0.
+    """
+    clear_objective_slot(path, 0)
+    clear_objective_slot(path, 1)
+    set_objective_amount(path, 0)
 
 # top-level parse_mib
 def parse_mib(path: str) -> dict:
@@ -1562,6 +1765,124 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
     print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
     return replaced
 
+
+# ----- Objective getters / setters -----
+def _objective_code_offset_for_index(objective_index: int) -> int:
+    """Map objective_index 0/1/2 -> code-relative offset used in the original JS (0xCC,0xD4,0xDC)."""
+    mapping = {0: 0xCC, 1: 0xD4, 2: 0xDC}
+    if objective_index not in mapping:
+        raise ValueError("objective_index must be 0,1 or 2")
+    return mapping[objective_index]
+
+def get_objective(questFilePath: str, objective_index: int) -> dict:
+    """
+    Read a full objective from the dynamic header.
+    objective_index: 0,1 or 2 (2 == sub objective)
+    Returns dict: {'type': int, 'target_id': int, 'qty': int}
+    """
+    if objective_index not in (0,1,2):
+        raise ValueError("objective_index must be 0,1 or 2")
+    rel = _objective_code_offset_for_index(objective_index)
+    abs_off = get_dynamic_absolute_offset(questFilePath, rel)
+    # layout: dword at off+0 = type, word at +4 = target_id, word at +6 = qty
+    t = read_dword(questFilePath, abs_off + 0)
+    target = read_word(questFilePath, abs_off + 4)
+    qty = read_word(questFilePath, abs_off + 6)
+    return {'type': t, 'target_id': target, 'qty': qty}
+
+def get_all_objectives(questFilePath: str) -> dict:
+    """Return objectives 0,1 and sub as a dict {'obj0':..., 'obj1':..., 'sub':...}"""
+    return {
+        'obj0': get_objective(questFilePath, 0),
+        'obj1': get_objective(questFilePath, 1),
+        'sub':  get_objective(questFilePath, 2)
+    }
+
+def set_objective(questFilePath: str, objective_index: int, type_val: int = None, target_id: int = None, qty: int = None):
+    """
+    Write one or more fields for an objective.
+    Pass None for fields you don't want to change.
+    objective_index: 0,1 or 2
+    type_val: 32-bit int, target_id: word (0..65535), qty: word (0..65535)
+    """
+    if objective_index not in (0,1,2):
+        raise ValueError("objective_index must be 0,1 or 2")
+    rel = _objective_code_offset_for_index(objective_index)
+    abs_off = get_dynamic_absolute_offset(questFilePath, rel)
+
+    # write type (dword)
+    if type_val is not None:
+        # ensure 32-bit range
+        if not (0 <= int(type_val) <= 0xFFFFFFFF):
+            raise ValueError("type_val out of range 0..0xFFFFFFFF")
+        write_dword_at(questFilePath, abs_off + 0, int(type_val))
+
+    # write target_id (word)
+    if target_id is not None:
+        if not (0 <= int(target_id) <= 0xFFFF):
+            raise ValueError("target_id out of range 0..65535")
+        write_word_at(questFilePath, abs_off + 4, int(target_id))
+
+    # write qty (word)
+    if qty is not None:
+        if not (0 <= int(qty) <= 0xFFFF):
+            raise ValueError("qty out of range 0..65535")
+        write_word_at(questFilePath, abs_off + 6, int(qty))
+# --- helper seguro para objetivos ---
+def _safe_set_objective(path: str, obj_index: int, type_id: int, target_id: int, qty: int):
+    """
+    Wrapper que asegura que index esté en 0..2 y captura errores para no corromper el fichero.
+    Llama a set_objective(path, index, type, target, qty)
+    """
+    try:
+        if obj_index < 0:
+            obj_index = 0
+        if obj_index > 2:
+            # nunca escribir fuera de los 3 slots válidos
+            raise IndexError("objective_index fuera de rango (solo 0,1,2 permitidos)")
+        set_objective(path, obj_index, type_id, target_id, qty)
+    except Exception as e:
+        # no lanzamos para evitar abortar el randomizer entero; logueamos para debug
+        print(f"[ERROR] _safe_set_objective: no pude escribir objective idx={obj_index} -> {e}")
+
+def clear_all_objectives(path: str):
+    """Pone a cero los tres slots de objectives (tipo=0,target=0,qty=0)."""
+    for idx in range(3):
+        _safe_set_objective(path, idx, 0, 0, 0)
+
+def write_objectives_for_monsters(path: str, monster_ids: list, prefer_type_for_single:int = 1):
+    """
+    monster_ids: lista de monster_id presentes en la quest (ordenados como quieras).
+    prefer_type_for_single: tipo a usar cuando escribimos objetivos individuales (p.ej. 1 para matar).
+    Reglas:
+      - Si len(monster_ids) <= 3 -> escribe cada uno en su slot (0..len-1) con type=prefer_type_for_single y qty=1.
+      - Si len(monster_ids) > 3 -> escribe un único objetivo type=8 (hunt all) en slot 0 y limpia los otros dos.
+    """
+    if monster_ids is None:
+        monster_ids = []
+
+    total = len(monster_ids)
+    if total == 0:
+        clear_all_objectives(path)
+        return
+
+    if total <= 3:
+        # escribir uno por slot
+        clear_all_objectives(path)  # opcional: limpiar antes
+        for i in range(total):
+            mid = int(monster_ids[i])  # target normalmente el monster id
+            _safe_set_objective(path, i, prefer_type_for_single, mid, 1)
+        # si había slots libres, asegurarse de que están a 0
+        for j in range(total, 3):
+            _safe_set_objective(path, j, 0, 0, 0)
+    else:
+        # más de 3 monstruos: poner objetivo tipo 8 (hunt all) en slot 0
+        # target_id para type 8 normalmente no hace falta (depende), usar 0 para seguridad
+        _safe_set_objective(path, 0, 8, 0, 0)   # qty/target ignorados por tipo 8 en muchos juegos
+        # limpiar los demás slots
+        _safe_set_objective(path, 1, 0, 0, 0)
+        _safe_set_objective(path, 2, 0, 0, 0)
+
 # ---------- VERIFY TABLES ----------
 def verify_tables(path: str, verbose: bool = True):
     """
@@ -1866,7 +2187,19 @@ def set_small_monster_position_by_indices(path: str, top_index: int, sub_index: 
     print(f"[WRITE] Small(top={top_index},sub={sub_index},idx={monster_index}) @0x{off:X} -> x={new_x if new_x is not None else info['x']}, z={new_z if new_z is not None else info['z']}")
     return True
 
-
+def is_large_monster_not_first_and_table_has_three(parsedMib: dict, monster_id: int) -> bool:
+    """
+    Returns True if the monster_id is in a large monster table,
+    is NOT the first in that table, and that table has at least 3 monsters.
+    Returns False otherwise.
+    """
+    large_tables = parsedMib.get('large_monster_table', [])
+    for table in large_tables:
+        if len(table) >= 3:
+            for idx, mon in enumerate(table):
+                if mon.get('monster_id') == monster_id and idx > 0:
+                    return True
+    return False
 
 
 
@@ -1964,5 +2297,3 @@ if __name__ == "__main__":
         replaceMonsterWith_In(newMonsterHex, newMonsterHex, questFileName)
     except Exception as e:
         print("Error:", e)
-
-

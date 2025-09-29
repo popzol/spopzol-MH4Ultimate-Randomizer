@@ -4,13 +4,17 @@ import os
 from pathlib import Path
 import random
 
-
+AVAILABLE_MAPS = [1,2,3,4,5,6,7,8,9,10,11,12,14,15,16,17,18,19,20,21]  # Avoid map 13
 
 GVseed=""
 settingRandomMap = True
+settingProgresion = True
+settingAlwaysMusic= True
+settingNoMoreThanOneInArena= True
 
 def setSeed(Seed: str):
-    GVseed= Seed
+    global GVseed
+    GVseed = Seed
     random.seed(Seed)
 def getSeed()->str:
     return GVseed
@@ -43,8 +47,7 @@ def random_hex(a:int , b:int):
     value = random.randint(a, b)
     return f"{value:02X}"
 
-setSeed(random.randint(1, 1000000))
-folder=getQuestFolder()
+
 
 def build_large_monster_index_list(parsedMib: dict):
     """
@@ -69,9 +72,6 @@ def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
       - selecciona areas/coords por monster en orden de tablas reales
       - respeta casos en los que no hay suficientes monsters
     """
-    # evitar map 13
-    while newMap == 13:
-        newMap = random.randint(1, 21)
 
     # setear map id primero
     QuestEditor.set_map_id_dynamic(questFilePath, newMap)
@@ -122,79 +122,153 @@ def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
 
     print(f"[INFO] editMapData_fixed: aplicado map {newMap} en {count} monstruos.")
 
-def randomizeMap(questFilePath :str, newMonstersList: list):
+def get_map_for_unique_monster_id(unique_monster_id: int) -> int:
+    """
+    Returns the map id for a quest with a single unique monster (by id).
+    """
+    monster_map = {
+        24: 8, 83: 8, 110: 8, 111: 8,      # Dalamadurs (Head/Tail/Shah)
+        46: 6,                             # Dahren Mohran
+        116: 20,                           # Ukanlos
+        77: 10, 79: 10,                    # Black/White Fatalis
+        78: 9, 117: 9, 33: 9,              # Crimson Fatalis (Super)/Akantor
+        89: 19                             # Gogmazios
+    }
+    if unique_monster_id in monster_map:
+        return monster_map[unique_monster_id]
+    return random.choice(AVAILABLE_MAPS)
 
-    uniqueMonsCounter=0
-    for i in newMonstersList:
-        if i in [24, 46, 77, 78, 79, 83, 89, 46, 117, 110, 111]:
-            uniqueMonsCounter +=1
+def randomizeMap(questFilePath: str, newMonstersList: list):
+    uniqueMonsList = VariousLists.uniqueMonstersList()
+    unique_monsters = [i for i in newMonstersList if i in uniqueMonsList]
+    uniqueMonsCounter = len(unique_monsters)
 
-    if uniqueMonsCounter>1:
-        #Reroll
+    if uniqueMonsCounter > 1:
+        # Reroll
         randomizeQuest(questFilePath)
 
-    elif uniqueMonsCounter==0:
-        newMap=random.randint(1,21)
-        editMapData(questFilePath, newMonstersList,newMap)
+    else:
+        allAreMusicalMonsters = True
+        if settingAlwaysMusic:
+            for i in newMonstersList:
+                if not i in VariousLists.getMusicalMonstersList():
+                    allAreMusicalMonsters = False
 
-    if uniqueMonsCounter ==1:
-        
-        if 24 in newMonstersList or 83 in newMonstersList or 110 in newMonstersList or 111 in newMonstersList: #Dalamadurs in Crag
-            editMapData(questFilePath, newMonstersList, 8)
-        elif 46 in newMonstersList: #Dahren
-            editMapData(questFilePath, newMonstersList, 6)
-        elif 77 in newMonstersList or 79 in newMonstersList: #Fattys
-            editMapData(questFilePath, newMonstersList, 10)
-        elif 78 in newMonstersList or 117 in newMonstersList: #Fire Fattys
-            editMapData(questFilePath, newMonstersList, 9)
-        elif 89 in newMonstersList:
-            QuestEditor.setArea_large(questFilePath, newMonstersList.index(89),89,3)
-            editMapData(questFilePath, newMonstersList, 19)
+        # Arena restriction: exclude arena maps if there are exactly 2 monsters and setting is active
+        possible_maps = AVAILABLE_MAPS
+        if settingNoMoreThanOneInArena and len(newMonstersList) == 2:
+            arena_maps = VariousLists.getArenaMapsList()
+            possible_maps = [m for m in AVAILABLE_MAPS if m not in arena_maps]
+
+        # Choose map for unique monster if needed
+        if uniqueMonsCounter == 1:
+            unique_monster_id = unique_monsters[0]
+            if not QuestEditor.is_large_monster_not_first_and_table_has_three(QuestEditor.parse_mib(questFilePath), unique_monster_id):
+                newMap = get_map_for_unique_monster_id(unique_monster_id)
+                # If the chosen map is not allowed, pick a random allowed map
+                if newMap not in possible_maps:
+                    newMap = random.choice(possible_maps)
+                editMapData(questFilePath, newMonstersList, newMap)
+                # Special handling for Gogmazios (id 89) AFTER editMapData
+                if unique_monster_id == 89:
+                    parsed = QuestEditor.parse_mib(questFilePath)
+                    found = False
+                    for table_idx, table in enumerate(parsed.get('large_monster_table', [])):
+                        for mon_idx, mon in enumerate(table):
+                            if mon.get('monster_id') == 89:
+                                try:
+                                    QuestEditor.setArea_large(questFilePath, table_idx, mon_idx, 3)
+                                    print(f"[INFO] setArea_large: placed monster 89 at table {table_idx} idx {mon_idx} area 3")
+                                    found = True
+                                except Exception as e:
+                                    print(f"[ERROR] setArea_large falló: {e}")
+                                break
+                        if found:
+                            break
+                    if not found:
+                        print("[WARN] No se encontró monster_id 89 en large_monster_table — no se aplica área especial")
+            return
+
+        # For 0 unique monsters (or any other case)
+        newMap = random.choice(possible_maps)
+        while (settingAlwaysMusic and newMap in VariousLists.getNoMusicalMapsList() and not allAreMusicalMonsters):
+            newMap = random.choice(possible_maps)
+
+        editMapData(questFilePath, newMonstersList, newMap)
 
 
+def progresionRandomizer(full_path: str):
+    parsedMib = QuestEditor.parse_mib(full_path)
+    monstersIDs = getLargeMonstersIDs(parsedMib)
+    if len(monstersIDs) > 0:
+        QuestEditor.clear_all_objectives(full_path)
 
+    rank = parsedMib['quest_rank']
+    tierChances = VariousLists.tierChancesOfRank(rank)
+    allTiers = [8, 7, 6, 5, 4, 3, 2, 1]
+    monCount = 0
+    newMonsters = []
+    for i in monstersIDs:
+        selectedTier = random.choices(allTiers, weights=tierChances, k=1)[0]
+        possibleMons = VariousLists.monsterListFromTier(selectedTier)
+        newMon = random.choice(possibleMons)
+        newMonsters.append(newMon)
+        QuestEditor.push_objective_recent(full_path, newMon, type_val=1, qty=1)
+        QuestEditor.find_and_replace_monster_individual(full_path, i, newMon, False)
+        monCount += 1
+    monCount = 0
 
-        
-        
-
-        
-
+    if settingRandomMap:
+        # Re-parse only if you know the file has changed
+        parsedMib = QuestEditor.parse_mib(full_path)
+        monstersIDs = getLargeMonstersIDs(parsedMib)
+        randomizeMap(full_path, monstersIDs)
 
 
 def randomizeQuest(full_path: str):
     if os.path.isfile(full_path):
-            parsedMib = QuestEditor.parse_mib(full_path)
-            monstersIDs= getLargeMonstersIDs(parsedMib)
-            largeIDList = VariousLists.getLargeList()
+        parsedMib = QuestEditor.parse_mib(full_path)
+        monstersIDs = getLargeMonstersIDs(parsedMib)
 
-            
+        if settingProgresion:
+            progresionRandomizer(full_path)
+        else:
+            monCount = 0
+            largeIDList = VariousLists.getLargeList()
             for i in monstersIDs:
-                
-                newMon= random.choice(largeIDList)
+                newMon = random.choice(largeIDList)
                 QuestEditor.find_and_replace_monster_individual(full_path, i, newMon, False)
+                monCount += 1
+            monCount = 0
 
             if settingRandomMap:
+                # Only re-parse if you know the file has changed
                 parsedMib = QuestEditor.parse_mib(full_path)
-                monstersIDs= getLargeMonstersIDs(parsedMib)
+                monstersIDs = getLargeMonstersIDs(parsedMib)
                 randomizeMap(full_path, monstersIDs)
 
                 
 
 def main():
     for file in os.listdir(folder):
+        print('\n')
+        print(file)
         full_path = os.path.join(folder, file)
         randomizeQuest(full_path)
+         
         
     
 def mainTests():
     for file in os.listdir(folder):
         full_path = os.path.join(folder, file)
-        if file=="m10111.1BBFD18E":
+        if file=="m11011.1BBFD18E":
             QuestEditor.pretty_print_quest_summary(full_path)
-            QuestEditor.find_and_replace_monster(full_path,1,5,False)
-           
+            parsedmib= QuestEditor.parse_mib(full_path)
+            print(parsedmib['objectives'])
 
+folder=getQuestFolder()
 if True:
+    
     sed= input("Enter a seed"'\n')
     setSeed(sed)
     main()
