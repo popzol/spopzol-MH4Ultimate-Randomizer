@@ -14,7 +14,7 @@ settingAlwaysMusic= True
 settingNoMoreThanOneInArena= True
 settingSoloBalance= True
 
-def reset_quest_files():
+def resetQuestFiles():
     """
     Resets the quest files by deleting the current loc folder and replacing it with
     a fresh copy from the og_loc folder.
@@ -49,6 +49,7 @@ def setSeed(Seed: str):
 def getSeed()->str:
     return GVseed
 
+#region Helper functions
 def getMonsterData(parsedMib: dict):
     data=[]
 
@@ -73,13 +74,11 @@ def getQuestFolder():
     target_folder = os.path.join(base_folder, "loc", "quest")
     return target_folder
 
-def random_hex(a:int , b:int):
+def randomHex(a:int , b:int):
     value = random.randint(a, b)
     return f"{value:02X}"
 
-
-
-def build_large_monster_index_list(parsedMib: dict):
+def buildLargeMonsterIndexList(parsedMib: dict):
     """
     Devuelve lista de tuplas (table_index, monster_index, monster_id)
     recorriendo parsedMib['large_monster_table'] respetando la estructura.
@@ -93,7 +92,6 @@ def build_large_monster_index_list(parsedMib: dict):
             out.append((ti, mi, mid))
     return out
 
-# Versión corregida de editMapData
 def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
     """
     newMonstersList: lista de monster_ids (puede ser devuelta por getLargeMonstersIDs),
@@ -104,10 +102,10 @@ def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
     """
 
     # setear map id primero
-    QuestEditor.set_map_id_dynamic(questFilePath, newMap)
+    QuestEditor.setMapIdDynamic(questFilePath, newMap)
 
     # conseguir parsedMib actualizado (por si el cambio del map afecta a estructura)
-    parsedMib = QuestEditor.parse_mib(questFilePath)
+    parsedMib = QuestEditor.parseMib(questFilePath)
 
     # lista de areas válidas para ese mapa
     areaList = VariousLists.subMapsOf(newMap)
@@ -116,7 +114,7 @@ def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
         return
 
     # construir lista con índices reales
-    index_list = build_large_monster_index_list(parsedMib)
+    index_list = buildLargeMonsterIndexList(parsedMib)
     if not index_list:
         print("[WARN] editMapData_fixed: no hay monstruos grandes en parsedMib")
         return
@@ -136,24 +134,24 @@ def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
             continue
 
         # setear area (usa índices reales)
-        # supongo que setArea_large(path, table_index, monster_index, area) es la firma correcta
+        # supongo que setAreaLarge(path, table_index, monster_index, area) es la firma correcta
         try:
-            QuestEditor.setArea_large(questFilePath, table_index, monster_index, newArea)
+            QuestEditor.setAreaLarge(questFilePath, table_index, monster_index, newArea)
         except Exception as e:
-            print(f"[ERROR] setArea_large falló para table {table_index} idx {monster_index}: {e}")
+            print(f"[ERROR] setAreaLarge falló para table {table_index} idx {monster_index}: {e}")
             continue
 
         # setear coords (x,z) usando la función que añadiste
         try:
-            QuestEditor.set_large_monster_position_by_indices(questFilePath, table_index, monster_index, newCoords[0], newCoords[1])
+            QuestEditor.setLargeMonsterPositionByIndices(questFilePath, table_index, monster_index, newCoords[0], newCoords[1])
         except Exception as e:
-            print(f"[ERROR] set_large_monster_position... falló para table {table_index} idx {monster_index}: {e}")
+            print(f"[ERROR] setLargeMonsterPosition... falló para table {table_index} idx {monster_index}: {e}")
             continue
 
     print(f"[INFO] editMapData_fixed: aplicado map {newMap} en {count} monstruos.")
 
 #region Helper functions
-def get_map_for_unique_monster_id(unique_monster_id: int) -> int:
+def getMapForUniqueMonsterID(unique_monster_id: int) -> int:
     """
     Returns the map id for a quest with a single unique monster (by id).
     """
@@ -169,7 +167,7 @@ def get_map_for_unique_monster_id(unique_monster_id: int) -> int:
         return monster_map[unique_monster_id]
     return random.choice(AVAILABLE_MAPS)
 
-def _check_musical_monsters(monster_list: list) -> bool:
+def checkMusicalMonsters(monster_list: list) -> bool:
     """
     Check if all monsters in the list are musical monsters.
     Returns True if all monsters are musical, False otherwise.
@@ -182,7 +180,7 @@ def _check_musical_monsters(monster_list: list) -> bool:
             return False
     return True
 
-def _get_possible_maps(monster_count: int) -> list:
+def getPossibleMaps(monster_count: int) -> list:
     """
     Get a list of possible maps based on settings and monster count.
     Handles arena restrictions for 2-monster quests.
@@ -192,23 +190,23 @@ def _get_possible_maps(monster_count: int) -> list:
         return [m for m in AVAILABLE_MAPS if m not in arena_maps]
     return AVAILABLE_MAPS.copy()
 
-def _handle_gogmazios(questFilePath: str):
+def handleGogmazios(questFilePath: str):
     """
     Special handling for Gogmazios (monster ID 89).
     Places it in area 3 of its map.
     """
-    parsed = QuestEditor.parse_mib(questFilePath)
+    parsed = QuestEditor.parseMib(questFilePath)
     found = False
     
     for table_idx, table in enumerate(parsed.get('large_monster_table', [])):
         for mon_idx, mon in enumerate(table):
             if mon.get('monster_id') == 89:
                 try:
-                    QuestEditor.setArea_large(questFilePath, table_idx, mon_idx, 3)
-                    print(f"[INFO] setArea_large: placed monster 89 at table {table_idx} idx {mon_idx} area 3")
+                    QuestEditor.setAreaLarge(questFilePath, table_idx, mon_idx, 3)
+                    print(f"[INFO] setAreaLarge: placed monster 89 at table {table_idx} idx {mon_idx} area 3")
                     found = True
                 except Exception as e:
-                    print(f"[ERROR] setArea_large falló: {e}")
+                    print(f"[ERROR] setAreaLarge falló: {e}")
                 break
         if found:
             break
@@ -216,16 +214,18 @@ def _handle_gogmazios(questFilePath: str):
     if not found:
         print("[WARN] No se encontró monster_id 89 en large_monster_table — no se aplica área especial")
 
-def _reorder_unique_monster_to_end(questFilePath: str, unique_monster_id: int):
+def reorderUniqueMonsterToPosition(questFilePath: str, unique_monster_id: int, position: int = -1):
     """
-    Reorders the unique monster to be the last monster in the quest.
-    This is useful for quests with 3 or more monsters where the unique monster should appear last.
+    Reorders the unique monster to be at the specified position in the quest.
+    If position is -1, it will place the monster at the end of the quest.
+    This is useful for quests with multiple monsters where unique monsters should not be first.
     
     Args:
         questFilePath: Path to the quest file
         unique_monster_id: ID of the unique monster to reorder
+        position: Position to place the monster (0-indexed, -1 means last position)
     """
-    parsed = QuestEditor.parse_mib(questFilePath)
+    parsed = QuestEditor.parseMib(questFilePath)
     monster_count = 0
     
     # Count total monsters
@@ -236,14 +236,22 @@ def _reorder_unique_monster_to_end(questFilePath: str, unique_monster_id: int):
         # No need to reorder if there are fewer than 3 monsters
         return
     
-    # Reorder the monster to be the last one (position = monster_count - 1)
+    # If position is -1 or greater than monster count, place at the end
+    if position == -1 or position >= monster_count:
+        position = monster_count - 1
+    
+    # Ensure position is not 0 (first position)
+    if position == 0:
+        position = 1  # Default to second position if first was requested
+    
+    # Reorder the monster to the specified position
     try:
-        QuestEditor.swap_large_monsters_order(questFilePath, unique_monster_id, monster_count - 1)
-        print(f"[INFO] Reordered unique monster {unique_monster_id} to be the last monster")
+        QuestEditor.swapLargeMonstersOrder(questFilePath, unique_monster_id, position)
+        print(f"[INFO] Reordered unique monster {unique_monster_id} to position {position}")
     except Exception as e:
         print(f"[ERROR] Failed to reorder unique monster: {e}")
 
-def _select_map_for_regular_monsters(possible_maps: list, all_musical: bool) -> int:
+def selectMapForRegularMonsters(possible_maps: list, all_musical: bool) -> int:
     """
     Select an appropriate map for regular monsters.
     Handles music settings if applicable.
@@ -258,7 +266,7 @@ def _select_map_for_regular_monsters(possible_maps: list, all_musical: bool) -> 
         
     return new_map
 
-def _select_tier1_or_tier2_monster():
+def selectTier1or2Monster():
     """
     Selects a random monster from tier 1 or tier 2 with a 50/50 chance.
     Used for the second monster in 2-monster quests with 1 unique monster.
@@ -270,9 +278,53 @@ def _select_tier1_or_tier2_monster():
     selected_tier = random.choice([1, 2])
     possible_monsters = VariousLists.monsterListFromTier(selected_tier)
     return random.choice(possible_monsters)
+
+def adjustStatsForSolo(stats : dict) -> dict:
+    # adjustment: decrease health and attack by 20%
+    adjusted_stats = stats.copy()
+    if 'hp' in adjusted_stats:
+        adjusted_stats['hp'] = int(adjusted_stats['hp'] * 0.8)
+    if 'atk' in adjusted_stats:
+        adjusted_stats['atk'] = int(adjusted_stats['atk'] * 0.8)
+    return adjusted_stats
+
+def packQuestArc(output_arc_name="quest01.arc"):
+    """
+    Packs the quest files into an ARC file using customArcRepacker.py.
+    This function should be called after all randomization is complete.
+    
+    Args:
+        output_arc_name: Name of the output ARC file (default: "quest01.arc")
+    """
+    import subprocess
+    import os
+    
+    try:
+        # Get the script directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Build paths
+        repacker_path = os.path.join(script_dir, "customArcRepacker.py")
+        output_arc_path = os.path.join(script_dir, output_arc_name)
+        loc_dir = os.path.join(script_dir, "loc")
+        
+        # Build the command
+        cmd = ["python", repacker_path, "c", output_arc_path, loc_dir]
+        
+        # Execute the command
+        print(f"[INFO] Packing quest files into {output_arc_name}...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        # Check if successful
+        if result.returncode == 0:
+            print(f"[SUCCESS] Quest files packed successfully into {output_arc_name}")
+            print(f"Output: {result.stdout}")
+        else:
+            print(f"[ERROR] Failed to pack quest files: {result.stderr}")
+            
+    except Exception as e:
+        print(f"[ERROR] Exception while packing quest files: {e}")
 #endregion
-
-
 
 def randomizeMap(questFilePath: str, newMonstersList: list):
     """
@@ -292,13 +344,26 @@ def randomizeMap(questFilePath: str, newMonstersList: list):
     uniqueMonsCounter = len(unique_monsters)
     
     # Check if all monsters are musical (for music settings)
-    allAreMusicalMonsters = _check_musical_monsters(newMonstersList)
+    allAreMusicalMonsters = checkMusicalMonsters(newMonstersList)
     
     # Get possible maps based on settings
-    possible_maps = _get_possible_maps(len(newMonstersList))
+    possible_maps = getPossibleMaps(len(newMonstersList))
     
-    # If there are multiple unique monsters, restart randomization
-    if uniqueMonsCounter > 1:
+    # Handle multiple unique monsters in a quest with 3+ monsters
+    if uniqueMonsCounter > 1 and len(newMonstersList) >= 3:
+        # Place unique monsters in positions other than the first
+        for i, unique_monster_id in enumerate(unique_monsters):
+            # Position them at positions 1 and 2 (second and third)
+            position = i + 1
+            if position < len(newMonstersList):
+                reorderUniqueMonsterToPosition(questFilePath, unique_monster_id, position)
+        
+        # Select a map suitable for the first unique monster
+        newMap = getMapForUniqueMonsterID(unique_monsters[0])
+        editMapData(questFilePath, newMonstersList, newMap)
+        return
+    # If there are multiple unique monsters in a quest with fewer than 3 monsters, restart randomization
+    elif uniqueMonsCounter > 1:
         randomizeQuest(questFilePath)
         return
     
@@ -306,37 +371,69 @@ def randomizeMap(questFilePath: str, newMonstersList: list):
     if uniqueMonsCounter == 1:
         unique_monster_id = unique_monsters[0]
         
-        # Special handling based on monster count
+        # Special handling for Dah'ren Mohran (ID 46)
+        if unique_monster_id == 46:
+            # Always use map 6 for Dah'ren Mohran
+            newMap = 6
+            
+            # Special handling based on monster count
+            monster_count = len(newMonstersList)
+            
+            # Case 1: Single monster quest - just use map 6
+            if monster_count == 1:
+                editMapData(questFilePath, newMonstersList, newMap)
+                return
+                
+            # Case 2: Two monster quest - handle companion
+            elif monster_count == 2:
+                # If settingNoMoreThanOneInArena is true, replace the non-Dah'ren monster
+                # with a random monster from tier 1 or 2
+                if settingNoMoreThanOneInArena:
+                    non_dahren_idx = 1 - newMonstersList.index(46)
+                    new_second_monster = selectTier1or2Monster()
+                    try:
+                        QuestEditor.findAndReplaceMonsterIndividual(
+                            questFilePath, 
+                            newMonstersList[non_dahren_idx], 
+                            new_second_monster, 
+                            False
+                        )
+                        newMonstersList[non_dahren_idx] = new_second_monster
+                    except Exception as e:
+                        print(f"[ERROR] Failed to replace second monster: {e}")
+                
+                editMapData(questFilePath, newMonstersList, newMap)
+                return
+                
+            # Case 3: Three or more monsters - place Dah'ren last
+            else:
+                reorderUniqueMonsterToPosition(questFilePath, 46, -1)
+                editMapData(questFilePath, newMonstersList, newMap)
+                return
+        
+        # Original handling for other unique monsters
         monster_count = len(newMonstersList)
         
         # Case 1: Single monster quest - use the unique monster's specific map
         if monster_count == 1:
-            newMap = get_map_for_unique_monster_id(unique_monster_id)
+            newMap = getMapForUniqueMonsterID(unique_monster_id)
         
         # Case 2: Two monster quest - special handling for second monster
         elif monster_count == 2:
-            newMap = get_map_for_unique_monster_id(unique_monster_id)
+            newMap = getMapForUniqueMonsterID(unique_monster_id)
             
             # If settingNoMoreThanOneInArena is true, replace the non-unique monster
             # with a random monster from tier 1 or 2
-            global settingNoMoreThanOneInArena
-            if 'settingNoMoreThanOneInArena' in globals() and settingNoMoreThanOneInArena:
-                # Find the index of the non-unique monster
+            if settingNoMoreThanOneInArena:
                 non_unique_idx = 1 - newMonstersList.index(unique_monster_id)
-                
-                # Select a random monster from tier 1 or 2
-                new_second_monster = _select_tier1_or_tier2_monster()
-                
-                # Replace the monster in the quest file
+                new_second_monster = selectTier1or2Monster()
                 try:
-                    QuestEditor.find_and_replace_monster_individual(
+                    QuestEditor.findAndReplaceMonsterIndividual(
                         questFilePath, 
                         newMonstersList[non_unique_idx], 
                         new_second_monster, 
                         False
                     )
-                    print(f"[INFO] Replaced second monster with tier 1/2 monster: {new_second_monster}")
-                    # Update the monster list for map editing
                     newMonstersList[non_unique_idx] = new_second_monster
                 except Exception as e:
                     print(f"[ERROR] Failed to replace second monster: {e}")
@@ -350,15 +447,15 @@ def randomizeMap(questFilePath: str, newMonstersList: list):
         
         # Special handling for Gogmazios
         if unique_monster_id == 89:
-            _handle_gogmazios(questFilePath)
+            handleGogmazios(questFilePath)
             
         # If there are 3 or more monsters, reorder the unique monster to be last
         if monster_count >= 3:
-            _reorder_unique_monster_to_end(questFilePath, unique_monster_id)
+            reorderUniqueMonsterToPosition(questFilePath, unique_monster_id, -1)
     
     # Handle regular monsters (no unique monsters)
     else:
-        newMap = _select_map_for_regular_monsters(possible_maps, allAreMusicalMonsters)
+        newMap = selectMapForRegularMonsters(possible_maps, allAreMusicalMonsters)
         editMapData(questFilePath, newMonstersList, newMap)
     
     return
@@ -372,12 +469,11 @@ def adjustStatsForSolo(stats : dict) -> dict:
         adjusted_stats['atk'] = int(adjusted_stats['atk'] * 0.8)
     return adjusted_stats
 
-
 def progresionRandomizer(full_path: str):
-    parsedMib = QuestEditor.parse_mib(full_path)
+    parsedMib = QuestEditor.parseMib(full_path)
     monstersIDs = getLargeMonstersIDs(parsedMib)
     if len(monstersIDs) > 0:
-        QuestEditor.clear_all_objectives(full_path)
+        QuestEditor.clearAllObjectives(full_path)
 
     rank = parsedMib['quest_rank']
     tierChances = VariousLists.tierChancesOfRank(rank)
@@ -389,28 +485,26 @@ def progresionRandomizer(full_path: str):
         possibleMons = VariousLists.monsterListFromTier(selectedTier)
         newMon = random.choice(possibleMons)
         newMonsters.append(newMon)
-        QuestEditor.push_objective_recent(full_path, newMon, type_val=1, qty=1)
-        QuestEditor.find_and_replace_monster_individual(full_path, i, newMon, False)
+        QuestEditor.pushObjectiveRecent(full_path, newMon, type_val=1, qty=1)
+        QuestEditor.findAndReplaceMonsterIndividual(full_path, i, newMon, False)
 
         if settingSoloBalance:
-            stats = QuestEditor.read_meta_entry(full_path, monCount)
+            stats = QuestEditor.readMetaEntry(full_path, monCount)
             newStats = adjustStatsForSolo(stats)
-            QuestEditor.write_stats_from_dict(full_path, monCount, newStats)
-
+            QuestEditor.writeStatsFromDict(full_path, monCount, newStats)
 
         monCount += 1
     monCount = 0
 
     if settingRandomMap:
         # Re-parse only if you know the file has changed
-        parsedMib = QuestEditor.parse_mib(full_path)
+        parsedMib = QuestEditor.parseMib(full_path)
         monstersIDs = getLargeMonstersIDs(parsedMib)
         randomizeMap(full_path, monstersIDs)
 
-
 def randomizeQuest(full_path: str):
     if os.path.isfile(full_path):
-        parsedMib = QuestEditor.parse_mib(full_path)
+        parsedMib = QuestEditor.parseMib(full_path)
         monstersIDs = getLargeMonstersIDs(parsedMib)
 
         if settingProgresion:
@@ -420,17 +514,15 @@ def randomizeQuest(full_path: str):
             largeIDList = VariousLists.getLargeList()
             for i in monstersIDs:
                 newMon = random.choice(largeIDList)
-                QuestEditor.find_and_replace_monster_individual(full_path, i, newMon, False)
+                QuestEditor.findAndReplaceMonsterIndividual(full_path, i, newMon, False)
                 monCount += 1
             monCount = 0
 
             if settingRandomMap:
                 # Only re-parse if you know the file has changed
-                parsedMib = QuestEditor.parse_mib(full_path)
+                parsedMib = QuestEditor.parseMib(full_path)
                 monstersIDs = getLargeMonstersIDs(parsedMib)
                 randomizeMap(full_path, monstersIDs)
-
-                
 
 def main():
     for file in os.listdir(folder):
@@ -438,18 +530,16 @@ def main():
         print(file)
         full_path = os.path.join(folder, file)
         randomizeQuest(full_path)
-         
-        
     
 def mainTests():
     for file in os.listdir(folder):
         full_path = os.path.join(folder, file)
         if file=="m11011.1BBFD18E":
-            QuestEditor.pretty_print_quest_summary(full_path)
-            parsedmib= QuestEditor.parse_mib(full_path)
+            QuestEditor.prettyPrintQuestSummary(full_path)
+            parsedmib= QuestEditor.parseMib(full_path)
             print(parsedmib['objectives'])
 
-def pack_quest_arc(output_arc_name="quest01.arc"):
+def packQuestArc(output_arc_name="quest01.arc"):
     """
     Packs the quest files into an ARC file using customArcRepacker.py.
     This function should be called after all randomization is complete.
@@ -488,14 +578,14 @@ def pack_quest_arc(output_arc_name="quest01.arc"):
 
 folder=getQuestFolder()
 if True:
-    reset_quest_files()
+    resetQuestFiles()
     sed= input("Enter a seed"'\n')
     setSeed(sed)
     main()
     # Pack the quest files into an ARC file after randomization
-    pack_quest_arc()
+    packQuestArc()
 else:
     mainTests()
 
 #Usado trae-correo
-#QuestEditor.expand_large_monster_table(full_path,0,1)
+#QuestEditor.expandLargeMonsterTable(full_path,0,1)
