@@ -8,6 +8,7 @@ Designed to work with **Citra mods** without touching your original ROM.
 **Recently Completed:**
 - Automatic (~100%) replace the monster and the zone in a quest. The quest is completeable, but the rewards are from the original monster.
 - All areas can work with almost any monster (obvious exceptions like Dalamadur), fixed broken spawnpoints
+- Some monsters have a cinematic when they enter the fight, and they need to be on their own map. 
 
 **Next Steps:**
 - Making a good Monster/Quest/Zone/IDs database
