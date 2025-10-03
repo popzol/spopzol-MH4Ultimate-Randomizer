@@ -185,7 +185,7 @@ def getNoMusicalMapsList()->list:
     return nmList 
 
 def getMusicalMonstersList()->list:
-    mList= [ 11,12,13,14,15,16,19,24,25,28,29,30,31,32,33,36,37,42,43,44,45,46,47,48,49,77,78,79,80,82,83,88,89,97,98,103,110,111,112,113,114,116,117,121,122]
+    mList= [ 11,12,13,14,15,16,19,24,25,28,29,30,31,32,33,34,35,36,37,42,43,44,45,46,47,48,49,77,78,79,80,82,83,88,89,97,98,103,110,111,112,113,114,116,117,121,122]
     return mList
 
 def getListOfCoords(zone :int, area: int)->list:
@@ -259,7 +259,8 @@ def tierChancesOfRank(rank:int)->list:
         [15, 20, 25, 20, 10, 5, 3, 2],
         [15, 20, 25, 20, 10, 5, 3, 2],
     ]
-    return chances[rank]
+    #return chances[rank]
+    return chances[0] #Tests
 
 def monsterListFromTier(tier):
     tiers = [

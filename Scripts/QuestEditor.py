@@ -375,6 +375,40 @@ def write_small_meta(questFilePath: str, size: int = None, unk0: int = None, hp:
     if unk2 is not None:
         write_byte_at(questFilePath, base + 7, unk2)
 
+# ----- Meta table reader -----
+def read_meta_entry(questFilePath: str, idx: int):
+    """
+    Read one entry from meta_table at base 0x34 + idx*8
+    Returns dict with fields: size, size_var, hp, atk, break_res, stamina, status_res
+    """
+    base = 0x34 + idx * 8
+    return {
+        'size': read_word(questFilePath, base),
+        'size_var': read_byte(questFilePath, base + 2),
+        'hp': read_byte(questFilePath, base + 3),
+        'atk': read_byte(questFilePath, base + 4),
+        'break_res': read_byte(questFilePath, base + 5),
+        'stamina': read_byte(questFilePath, base + 6),
+        'status_res': read_byte(questFilePath, base + 7)
+    }
+
+def write_stats_from_dict(questFilePath: str, idx: int, stats: dict):
+    """
+    Helper to write monster stats from a dict using write_meta_entry.
+    stats should have keys: size, size_var, hp, atk, break_res, stamina, status_res.
+    Only writes keys present in the dict.
+    """
+    write_meta_entry(
+        questFilePath,
+        idx,
+        size=stats.get('size'),
+        size_var=stats.get('size_var'),
+        hp=stats.get('hp'),
+        atk=stats.get('atk'),
+        break_res=stats.get('break_res'),
+        stamina=stats.get('stamina'),
+        status_res=stats.get('status_res')
+    )
 
 # ---------------------------
 # Additional editor helpers:
@@ -397,7 +431,6 @@ def append_aligned(path: str, data: bytes, align: int = 0x10) -> int:
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
-    print(f"[DEBUG] Appended {len(data)} bytes at 0x{addr:X} (pad {pad} bytes)")
     return addr
 
 # ---------- WRITE LOOT TABLE ----------
@@ -991,15 +1024,13 @@ def set_monster_position_by_id(path: str, monster_id: int, new_x=None, new_z=Non
         if new_z is not None:
             write_float_at(path, off + 0x18, float(new_z))
         updated += 1
-        print(f"[WRITE] updated {entry['type']} at 0x{off:X} -> x={new_x if new_x is not None else entry['x']}, z={new_z if new_z is not None else entry['z']}")
         if apply_to == 'first':
             break
 
-    print(f"[INFO] posiciones actualizadas: {updated}")
     return updated
 
 # ----------------------------
-# OBJECTIVE HELPERS (INSERT INTO QuestEditor.py)
+# OBJECTIVE HELPERS (INSERT INTO py)
 # ----------------------------
 # Dependencies: get_dynamic_absolute_offset, read_byte, read_word, read_dword,
 # write_byte_at, write_word_at, write_dword_at, os.path.getsize
@@ -1545,6 +1576,9 @@ def pretty_print_quest_summary(path: str):
     print("=====================")
 
 # === END: standalone parse_mib + pretty_print_quest_summary ===
+# --------------------------------------------
+# FINDS AND REPLACE MONSTER
+
 def find_and_replace_monster_individual(path: str, old_monster_id: int, new_monster_id: int, dry_run: bool = False):
     """
     Versión CORREGIDA: Reemplaza solo UN monstruo a la vez, PERO busca en TODAS las tablas.
@@ -1571,11 +1605,8 @@ def find_and_replace_monster_individual(path: str, old_monster_id: int, new_mons
                     print(f"[DRY] would replace large at 0x{off:X} ({hex(mid)}) -> {hex(new_monster_id)}")
                 else:
                     write_dword_at(path, off, new_monster_id)
-                    print(f"[WRITE] replaced large at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                     replaced += 1
                     found_and_replaced = True  # Marcamos que ya reemplazamos uno
-                    # NO hacemos return aquí, continuamos buscando en otras tablas
-                # Si ya reemplazamos, salimos de este bucle while pero continuamos con otras tablas
                 if found_and_replaced:
                     break
             idx += 1
@@ -1610,7 +1641,6 @@ def find_and_replace_monster_individual(path: str, old_monster_id: int, new_mons
                                 print(f"[DRY] would replace small at 0x{off:X} ({hex(mid)})")
                             else:
                                 write_dword_at(path, off, new_monster_id)
-                                print(f"[WRITE] replaced small at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                                 replaced += 1
                                 found_and_replaced = True
                             if found_and_replaced:
@@ -1645,7 +1675,6 @@ def find_and_replace_monster_individual(path: str, old_monster_id: int, new_mons
                         print(f"[DRY] would replace unstable at 0x{off:X} ({hex(mid)})")
                     else:
                         write_dword_at(path, off, new_monster_id)
-                        print(f"[WRITE] replaced unstable at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                         replaced += 1
                         found_and_replaced = True
                     if found_and_replaced:
@@ -1654,7 +1683,9 @@ def find_and_replace_monster_individual(path: str, old_monster_id: int, new_mons
                 if idx > 1000:
                     break
 
-    print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
+    # Only print if dry_run
+    if dry_run:
+        print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
     return replaced
 
 # ---------- FIND AND REPLACE MONSTER ----------
@@ -1692,7 +1723,6 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
                     print(f"[DRY] would replace large at 0x{off:X} ({hex(mid)}) -> {hex(new_monster_id)}")
                 else:
                     write_dword_at(path, off, new_monster_id)
-                    print(f"[WRITE] replaced large at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                 replaced += 1
             idx += 1
             if idx > 1000:
@@ -1726,7 +1756,6 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
                             print(f"[DRY] would replace small at 0x{off:X} ({hex(mid)})")
                         else:
                             write_dword_at(path, off, new_monster_id)
-                            print(f"[WRITE] replaced small at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                         replaced += 1
                     idx += 1
                     if idx > 1000:
@@ -1755,16 +1784,65 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
                     print(f"[DRY] would replace unstable at 0x{off:X} ({hex(mid)})")
                 else:
                     write_dword_at(path, off, new_monster_id)
-                    print(f"[WRITE] replaced unstable at 0x{off:X} {hex(old_monster_id)} -> {hex(new_monster_id)}")
                 replaced += 1
             idx += 1
             if idx > 1000:
                 print("[WARN] unstable safety limit reached")
                 break
 
-    print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
+    # Only print if dry_run
+    if dry_run:
+        print(f"[INFO] Replacements done: {replaced} (dry_run={dry_run})")
     return replaced
 
+# ----- Large monster reorder -----
+
+
+def swap_large_monsters_order(full_path: str, swap_monster_id: int, position: int):
+    """
+    Swaps the first occurrence of swap_monster_id in the first large monster table
+    with the monster currently at 'position'. If swap_monster_id is already at 'position', does nothing.
+    If there are multiple swap_monster_id, only the first is swapped.
+    """
+    table_addresses = get_large_monster_table_addresses(full_path)
+    if not table_addresses:
+        print("[ERROR] No large monster tables found.")
+        return
+    table_addr = table_addresses[0]
+    # Read all monsters
+    monsters = []
+    idx = 0
+    found_idx = None
+    while True:
+        offset = table_addr + idx * MONSTER_STRUCT_SIZE
+        mid = read_dword(full_path, offset)
+        if mid == 0xFFFFFFFF:
+            break
+        monsters.append(unpack_monster_struct(_read_bytes(full_path, offset, MONSTER_STRUCT_SIZE)))
+        if found_idx is None and mid == swap_monster_id:
+            found_idx = idx
+        idx += 1
+        if idx > 1000:
+            break
+    if found_idx is None:
+        print(f"[ERROR] Monster ID {swap_monster_id} not found in large monster table.")
+        return
+    if position < 0 or position >= len(monsters):
+        print(f"[ERROR] Position {position} out of range.")
+        return
+    if found_idx == position:
+        print("[INFO] Monster already at desired position, no swap needed.")
+        return
+    # Swap monsters
+    monsters[found_idx], monsters[position] = monsters[position], monsters[found_idx]
+    # Write back
+    for idx, mon in enumerate(monsters):
+        offset = table_addr + idx * MONSTER_STRUCT_SIZE
+        write_monster_struct_at(full_path, offset, mon)
+    # Write terminator
+    offset = table_addr + len(monsters) * MONSTER_STRUCT_SIZE
+    write_dword_at(full_path, offset, 0xFFFFFFFF)
+    print(f"[INFO] Swapped monster {swap_monster_id} to position {position}.")
 
 # ----- Objective getters / setters -----
 def _objective_code_offset_for_index(objective_index: int) -> int:
@@ -2101,7 +2179,6 @@ def set_large_monster_position_by_indices(path: str, top_index: int, monster_ind
         write_float_at(path, off + 0x10, float(new_x))
     if new_z is not None:
         write_float_at(path, off + 0x18, float(new_z))
-    print(f"[WRITE] Large(top={top_index},idx={monster_index}) @0x{off:X} -> x={new_x if new_x is not None else info['x']}, z={new_z if new_z is not None else info['z']}")
     return True
 
 # ----------------------------
@@ -2184,22 +2261,8 @@ def set_small_monster_position_by_indices(path: str, top_index: int, sub_index: 
         write_float_at(path, off + 0x10, float(new_x))
     if new_z is not None:
         write_float_at(path, off + 0x18, float(new_z))
-    print(f"[WRITE] Small(top={top_index},sub={sub_index},idx={monster_index}) @0x{off:X} -> x={new_x if new_x is not None else info['x']}, z={new_z if new_z is not None else info['z']}")
     return True
 
-def is_large_monster_not_first_and_table_has_three(parsedMib: dict, monster_id: int) -> bool:
-    """
-    Returns True if the monster_id is in a large monster table,
-    is NOT the first in that table, and that table has at least 3 monsters.
-    Returns False otherwise.
-    """
-    large_tables = parsedMib.get('large_monster_table', [])
-    for table in large_tables:
-        if len(table) >= 3:
-            for idx, mon in enumerate(table):
-                if mon.get('monster_id') == monster_id and idx > 0:
-                    return True
-    return False
 
 
 
@@ -2218,7 +2281,6 @@ def changeByteAtOffset_For_In(offset: int, new_value: bytes, questFilePath: str)
         f.write(new_value)
         f.flush()
         os.fsync(f.fileno())
-    print(f"[DEBUG] Successfully wrote {new_value.hex().upper()} at offset 0x{offset:X}")
 
 def last_byte_pos(path: str) -> int:
     """Return the index of the last byte in the file (size-1)."""
