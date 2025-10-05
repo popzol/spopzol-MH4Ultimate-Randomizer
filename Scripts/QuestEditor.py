@@ -171,6 +171,11 @@ def set_map_id_dynamic(questFilePath: str, map_id: int):
     abs_off = get_dynamic_absolute_offset(questFilePath, 0xC4)
     write_byte_at(questFilePath, abs_off, map_id)
 
+def get_map_id(questFilePath: str) -> int:
+    """Get map id using the dynamic header offset (JS used header_offset + 0xC4)"""
+    abs_off = get_dynamic_absolute_offset(questFilePath, 0xC4)
+    return read_byte(questFilePath, abs_off)
+
 def set_quest_id(questFilePath: str, quest_id: int):
     abs_off = get_dynamic_absolute_offset(questFilePath, 0xC0)
     write_word_at(questFilePath, abs_off, quest_id)
@@ -997,6 +1002,7 @@ def find_monster_instances(path: str, monster_id: int):
 
     return results
 
+
 def set_monster_position_by_id(path: str, monster_id: int, new_x=None, new_z=None, apply_to='all'):
     """
     Cambia la posición X/Z de las apariciones del monster_id.
@@ -1089,6 +1095,197 @@ def get_objective_amount(path: str) -> int:
     if abs_off < 0 or abs_off + 1 > size:
         raise EOFError(f"get_objective_amount: offset 0x{abs_off:X} out of range (size 0x{size:X})")
     return read_byte(path, abs_off)
+
+def delete_monster_by_id_first_instance(path: str, monster_id: int):
+    """
+    Busca la primera aparición del monster_id y la elimina completamente.
+    Shifts remaining monsters in the same table to fill the gap.
+    """
+    instances = find_monster_instances(path, monster_id)
+    if not instances:
+        print(f"Monster {monster_id} not found in quest.")
+        return False
+    
+    first = instances[0]
+    print(f"Deleting first instance of monster {monster_id} at {first}")
+    
+    if first['type'] == 'large':
+        return _delete_from_large_table(path, first)
+    elif first['type'] == 'small':
+        return _delete_from_small_table(path, first)
+    elif first['type'] == 'unstable':
+        return _delete_from_unstable_table(path, first)
+    
+    return False
+
+
+def _delete_from_large_table(path: str, monster_info: dict) -> bool:
+    """
+    Deletes a monster from a large table and shifts remaining monsters.
+    """
+    try:
+        table_index = monster_info['table_index']
+        monster_index = monster_info['monster_index']
+        
+        # Get the table address
+        lbase = read_dword(path, 0x28)
+        table_addresses = read_dword_array_until_zero(path, lbase)
+        table_addr = table_addresses[table_index]
+        
+        # Count total monsters in this table (until terminator)
+        total_monsters = 0
+        while True:
+            check_offset = table_addr + total_monsters * MONSTER_STRUCT_SIZE
+            monster_id = read_dword(path, check_offset)
+            if monster_id == 0xFFFFFFFF:
+                break
+            total_monsters += 1
+            if total_monsters > 2000:  # Safety limit
+                break
+        
+        # If this is the only monster, just write terminator
+        if total_monsters == 1:
+            write_dword_at(path, table_addr, 0xFFFFFFFF)
+            print(f"Deleted last monster in table {table_index}")
+            return True
+        
+        # Shift all monsters after the deleted one
+        for i in range(monster_index, total_monsters - 1):
+            src_offset = table_addr + (i + 1) * MONSTER_STRUCT_SIZE
+            dst_offset = table_addr + i * MONSTER_STRUCT_SIZE
+            
+            # Read the source monster struct
+            monster_data = _read_bytes(path, src_offset, MONSTER_STRUCT_SIZE)
+            
+            # Write it to the destination
+            with open(path, 'r+b') as f:
+                f.seek(dst_offset)
+                f.write(monster_data)
+        
+        # Write terminator at the new end position
+        terminator_offset = table_addr + (total_monsters - 1) * MONSTER_STRUCT_SIZE
+        write_dword_at(path, terminator_offset, 0xFFFFFFFF)
+        
+        print(f"Deleted monster from large table {table_index}, position {monster_index}")
+        print(f"Shifted {total_monsters - monster_index - 1} monsters forward")
+        return True
+        
+    except Exception as e:
+        print(f"Error deleting from large table: {e}")
+        return False
+
+
+def _delete_from_small_table(path: str, monster_info: dict) -> bool:
+    """
+    Deletes a monster from a small table and shifts remaining monsters.
+    """
+    try:
+        table_index = monster_info['table_index']
+        sub_index = monster_info['sub_index']
+        monster_index = monster_info['monster_index']
+        
+        # Get the small table structure
+        sbase = read_dword(path, 0x2C)
+        top_ptrs = read_dword_array_until_zero(path, sbase)
+        top_addr = top_ptrs[table_index]
+        sub_ptrs = read_dword_array_until_zero(path, top_addr)
+        sub_addr = sub_ptrs[sub_index]
+        
+        # Count total monsters in this sub-table
+        total_monsters = 0
+        while True:
+            check_offset = sub_addr + total_monsters * MONSTER_STRUCT_SIZE
+            monster_id = read_dword(path, check_offset)
+            if monster_id == 0xFFFFFFFF:
+                break
+            total_monsters += 1
+            if total_monsters > 2000:  # Safety limit
+                break
+        
+        # If this is the only monster, just write terminator
+        if total_monsters == 1:
+            write_dword_at(path, sub_addr, 0xFFFFFFFF)
+            print(f"Deleted last monster in small table {table_index}.{sub_index}")
+            return True
+        
+        # Shift all monsters after the deleted one
+        for i in range(monster_index, total_monsters - 1):
+            src_offset = sub_addr + (i + 1) * MONSTER_STRUCT_SIZE
+            dst_offset = sub_addr + i * MONSTER_STRUCT_SIZE
+            
+            # Read the source monster struct
+            monster_data = _read_bytes(path, src_offset, MONSTER_STRUCT_SIZE)
+            
+            # Write it to the destination
+            with open(path, 'r+b') as f:
+                f.seek(dst_offset)
+                f.write(monster_data)
+        
+        # Write terminator at the new end position
+        terminator_offset = sub_addr + (total_monsters - 1) * MONSTER_STRUCT_SIZE
+        write_dword_at(path, terminator_offset, 0xFFFFFFFF)
+        
+        print(f"Deleted monster from small table {table_index}.{sub_index}, position {monster_index}")
+        print(f"Shifted {total_monsters - monster_index - 1} monsters forward")
+        return True
+        
+    except Exception as e:
+        print(f"Error deleting from small table: {e}")
+        return False
+
+
+def _delete_from_unstable_table(path: str, monster_info: dict) -> bool:
+    """
+    Deletes a monster from the unstable table and shifts remaining entries.
+    """
+    try:
+        entry_index = monster_info['sub_index']  # In unstable table, sub_index is the entry index
+        
+        # Get the unstable table base
+        ubase = read_dword(path, 0x30)
+        
+        # Count total entries in unstable table
+        total_entries = 0
+        while True:
+            entry_off = ubase + total_entries * 0x2C
+            chance = read_word(path, entry_off)
+            if chance == 0xFFFF:
+                break
+            total_entries += 1
+            if total_entries > 2000:  # Safety limit
+                break
+        
+        # If this is the only entry, just write terminator
+        if total_entries == 1:
+            write_word_at(path, ubase, 0xFFFF)
+            print(f"Deleted last entry in unstable table")
+            return True
+        
+        # Shift all entries after the deleted one
+        for i in range(entry_index, total_entries - 1):
+            src_offset = ubase + (i + 1) * 0x2C
+            dst_offset = ubase + i * 0x2C
+            
+            # Read the source entry (0x2C bytes)
+            entry_data = _read_bytes(path, src_offset, 0x2C)
+            
+            # Write it to the destination
+            with open(path, 'r+b') as f:
+                f.seek(dst_offset)
+                f.write(entry_data)
+        
+        # Write terminator at the new end position
+        terminator_offset = ubase + (total_entries - 1) * 0x2C
+        write_word_at(path, terminator_offset, 0xFFFF)
+        
+        print(f"Deleted entry from unstable table, position {entry_index}")
+        print(f"Shifted {total_entries - entry_index - 1} entries forward")
+        return True
+        
+    except Exception as e:
+        print(f"Error deleting from unstable table: {e}")
+        return False
+
 
 
 def set_objective_amount(path: str, amount: int):
@@ -1472,7 +1669,6 @@ def parse_mib(path: str) -> dict:
     q['large_monster_table'] = []
     for addr in q['large_monster_table_addresses']:
         if not _is_valid_ptr(addr):
-            q['large_monster_table'].append([])
             continue
         arr = []
         for i in range(0, 200):
@@ -1798,17 +1994,21 @@ def find_and_replace_monster(path: str, old_monster_id: int, new_monster_id: int
 # ----- Large monster reorder -----
 
 
-def swap_large_monsters_order(full_path: str, swap_monster_id: int, position: int):
+def swap_large_monsters_order(full_path: str, swap_monster_id: int, position: int, table_index: int = 0):
     """
-    Swaps the first occurrence of swap_monster_id in the first large monster table
+    Swaps the first occurrence of swap_monster_id in the specified large monster table
     with the monster currently at 'position'. If swap_monster_id is already at 'position', does nothing.
     If there are multiple swap_monster_id, only the first is swapped.
+    table_index: The index of the large monster table to operate on (default: 0).
     """
     table_addresses = get_large_monster_table_addresses(full_path)
     if not table_addresses:
         print("[ERROR] No large monster tables found.")
         return
-    table_addr = table_addresses[0]
+    if not (0 <= table_index < len(table_addresses)):
+        print(f"[ERROR] Invalid table_index {table_index}. Must be between 0 and {len(table_addresses) - 1}.")
+        return
+    table_addr = table_addresses[table_index]
     # Read all monsters
     monsters = []
     idx = 0
@@ -2085,6 +2285,17 @@ def verify_tables(path: str, verbose: bool = True):
 
 import os
 
+def get_all_monster_ids(parsedMib: dict) -> list:
+    """
+    Extracts all monster IDs from the large_monster_table in a parsed MIB.
+    """
+    monster_ids = []
+    for table in parsedMib.get('large_monster_table', []):
+        for monster in table:
+            if 'monster_id' in monster:
+                monster_ids.append(monster['monster_id'])
+    return monster_ids
+
 # ----------------------------
 # Helpers internos
 # ----------------------------
@@ -2337,6 +2548,502 @@ def replaceSubzone_In(subzoneIDStr: str, questFileName: str):
     newZoneID = bytes.fromhex(subzoneIDStr)
     changeByteAtOffset_For_In(spawnZoneByte, newZoneID, questFilePath)
 
+
+def moveMonsterToPosition(questFilePath: str, monster_id: int, position: int = -1):
+    """
+    Moves any monster to the specified GLOBAL position across all monster tables.
+    Automatically calculates total monster count and handles table management internally.
+    
+    Args:
+        questFilePath: Path to the quest file
+        monster_id: ID of the monster to move (can be unique or regular)
+        position: GLOBAL position to place the monster (0-indexed across all tables)
+                 -1 = last position globally
+                 -2 = second to last position globally
+                 0+ = specific global position (0 = first monster across all tables)
+    
+    Returns:
+        bool: True if monster was successfully moved, False otherwise
+    """
+    parsed = parse_mib(questFilePath)
+    large_monster_tables = parsed.get('large_monster_table', [])
+    
+    if not large_monster_tables:
+        print(f"[WARN] No large monster tables found in quest file.")
+        return False
+    
+    # Calculate total monster count across all tables
+    total_monster_count = sum(len(table) for table in large_monster_tables)
+    
+    # Early return if there are fewer than 2 monsters total
+    if total_monster_count < 2:
+        print(f"[INFO] Quest only has {total_monster_count} monster(s). No reordering needed.")
+        return False
+    
+    # Build a global monster list with table and position info
+    global_monster_list = []
+    for table_idx, table in enumerate(large_monster_tables):
+        for monster_idx, monster in enumerate(table):
+            global_monster_list.append({
+                'monster_id': monster.get('monster_id'),
+                'table_idx': table_idx,
+                'monster_idx': monster_idx,
+                'global_idx': len(global_monster_list)
+            })
+    
+    # Find the target monster in the global list
+    target_monster_info = None
+    for monster_info in global_monster_list:
+        if monster_info['monster_id'] == monster_id:
+            target_monster_info = monster_info
+            break
+    
+    if target_monster_info is None:
+        print(f"[WARN] Monster ID {monster_id} not found in any large monster table. Cannot move.")
+        return False
+    
+    # Handle special position values
+    if position == -1:
+        # Last position globally
+        position = total_monster_count - 1
+    elif position == -2:
+        # Second to last position globally
+        position = max(0, total_monster_count - 2)
+    elif position < 0:
+        print(f"[WARN] Invalid position {position}. Use -1 for last, -2 for second to last, or 0+ for specific position.")
+        return False
+    elif position >= total_monster_count:
+        # If requested position is beyond total count, place at last position
+        position = total_monster_count - 1
+    
+    # Check if monster is already at the desired global position
+    if target_monster_info['global_idx'] == position:
+        print(f"[INFO] Monster {monster_id} is already at global position {position}.")
+        return True
+    
+    # Determine target table and position within that table for the desired global position
+    current_count = 0
+    target_table_idx = 0
+    target_position_in_table = 0
+    
+    for table_idx, table in enumerate(large_monster_tables):
+        table_size = len(table)
+        if current_count + table_size > position:
+            # The target position is within this table
+            target_table_idx = table_idx
+            target_position_in_table = position - current_count
+            break
+        current_count += table_size
+    
+    # If the monster is already in the target table, use swap_large_monsters_order
+    if target_monster_info['table_idx'] == target_table_idx:
+        try:
+            swap_large_monsters_order(questFilePath, monster_id, target_position_in_table, target_table_idx)
+            print(f"[INFO] Successfully moved monster {monster_id} to global position {position} (table {target_table_idx}, position {target_position_in_table})")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to move monster {monster_id} within table: {e}")
+            return False
+    
+    # If the monster needs to move to a different table, we need to:
+    # 1. Remove the monster from its current table
+    # 2. Insert it at the target position in the target table
+    # 3. Handle the gap left in the original table
+    
+    try:
+        # First, get the monster data before removing it
+        source_table_idx = target_monster_info['table_idx']
+        source_monster_idx = target_monster_info['monster_idx']
+        
+        # Read the monster data
+        source_table_addr = get_large_monster_table_addresses(questFilePath)[source_table_idx]
+        monster_offset = source_table_addr + source_monster_idx * MONSTER_STRUCT_SIZE
+        
+        # Read the monster struct (40 bytes)
+        monster_data = _read_bytes(questFilePath, monster_offset, MONSTER_STRUCT_SIZE)
+        
+        # Parse the monster data into a dict
+        fmt = "<II8BfffIII"
+        unpacked = struct.unpack(fmt, monster_data)
+        monster_dict = {
+            'monster_id': unpacked[0],
+            'qty': unpacked[1],
+            'condition': unpacked[2],
+            'area': unpacked[3],
+            'crashflag': unpacked[4],
+            'special': unpacked[5],
+            'unk2': unpacked[6],
+            'unk3': unpacked[7],
+            'unk4': unpacked[8],
+            'infection': unpacked[9],
+            'x': unpacked[10],
+            'y': unpacked[11],
+            'z': unpacked[12],
+            'x_rot': unpacked[13],
+            'y_rot': unpacked[14],
+            'z_rot': unpacked[15]
+        }
+        
+        # Remove the monster from its current position by writing a terminator
+        terminator = struct.pack("<I", 0xFFFFFFFF) + b'\x00' * (MONSTER_STRUCT_SIZE - 4)
+        changeByteAtOffset_For_In(monster_offset, terminator, questFilePath)
+        
+        # Shift remaining monsters in the source table up to fill the gap
+        source_table = large_monster_tables[source_table_idx]
+        for i in range(source_monster_idx + 1, len(source_table)):
+            src_offset = source_table_addr + i * MONSTER_STRUCT_SIZE
+            dst_offset = source_table_addr + (i - 1) * MONSTER_STRUCT_SIZE
+            monster_bytes = _read_bytes(questFilePath, src_offset, MONSTER_STRUCT_SIZE)
+            changeByteAtOffset_For_In(dst_offset, monster_bytes, questFilePath)
+        
+        # Write terminator at the end of the source table
+        last_offset = source_table_addr + (len(source_table) - 1) * MONSTER_STRUCT_SIZE
+        changeByteAtOffset_For_In(last_offset, terminator, questFilePath)
+        
+        # Now insert the monster at the target position
+        target_table_addr = get_large_monster_table_addresses(questFilePath)[target_table_idx]
+        target_table = large_monster_tables[target_table_idx]
+        
+        # Shift monsters in target table down to make space
+        for i in range(len(target_table) - 1, target_position_in_table - 1, -1):
+            src_offset = target_table_addr + i * MONSTER_STRUCT_SIZE
+            dst_offset = target_table_addr + (i + 1) * MONSTER_STRUCT_SIZE
+            monster_bytes = _read_bytes(questFilePath, src_offset, MONSTER_STRUCT_SIZE)
+            changeByteAtOffset_For_In(dst_offset, monster_bytes, questFilePath)
+        
+        # Insert the monster at the target position
+        target_offset = target_table_addr + target_position_in_table * MONSTER_STRUCT_SIZE
+        write_monster_struct_at(questFilePath, target_offset, monster_dict)
+        
+        print(f"[INFO] Successfully moved monster {monster_id} to global position {position} (table {target_table_idx}, position {target_position_in_table})")
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to move monster {monster_id} between tables: {e}")
+        return False
+
+# ----- Wave-based monster management functions -----
+
+def swap_large_monster(questFilePath: str, monster_id: int, target_wave: int, target_position: int):
+    """
+    Swaps a monster by its ID to a specific wave (table) and position.
+    The monster currently at the target location exchanges positions with the incoming monster.
+    
+    Args:
+        questFilePath: Path to the quest file
+        monster_id: ID of the monster to move
+        target_wave: Target wave/table index (0-2, max 3 waves)
+        target_position: Position within the target wave (0-1, max 2 monsters per wave)
+    
+    Returns:
+        bool: True if swap was successful, False otherwise
+    
+    Example:
+        If monster 7 is at wave 0, position 0 and monster 9 is at wave 1, position 0:
+        swap_large_monster(path, 7, 1, 0) will result in:
+        - Monster 9 moves to wave 0, position 0
+        - Monster 7 moves to wave 1, position 0
+    """
+    parsed = parse_mib(questFilePath)
+    large_monster_tables = parsed.get('large_monster_table', [])
+    
+    if not large_monster_tables:
+        print(f"[ERROR] No large monster tables found in quest file.")
+        return False
+    
+    # Validate wave constraints
+    if target_wave < 0 or target_wave >= len(large_monster_tables):
+        print(f"[ERROR] Invalid target wave {target_wave}. Must be between 0 and {len(large_monster_tables) - 1}.")
+        return False
+    
+    if target_wave >= 3:
+        print(f"[ERROR] Target wave {target_wave} exceeds maximum of 3 waves.")
+        return False
+    
+    target_table = large_monster_tables[target_wave]
+    
+    if target_position < 0 or target_position >= len(target_table):
+        print(f"[ERROR] Invalid target position {target_position}. Must be between 0 and {len(target_table) - 1}.")
+        return False
+    
+    if target_position >= 2:
+        print(f"[ERROR] Target position {target_position} exceeds maximum of 2 monsters per wave.")
+        return False
+    
+    # Find the source monster
+    source_wave = -1
+    source_position = -1
+    
+    for wave_idx, wave in enumerate(large_monster_tables):
+        for pos_idx, monster in enumerate(wave):
+            if monster.get('monster_id') == monster_id:
+                source_wave = wave_idx
+                source_position = pos_idx
+                break
+        if source_wave != -1:
+            break
+    
+    if source_wave == -1:
+        print(f"[ERROR] Monster ID {monster_id} not found in any wave.")
+        return False
+    
+    # Check if monster is already at target location
+    if source_wave == target_wave and source_position == target_position:
+        print(f"[INFO] Monster {monster_id} is already at wave {target_wave}, position {target_position}.")
+        return True
+    
+    try:
+        # Get table addresses
+        table_addresses = get_large_monster_table_addresses(questFilePath)
+        
+        # Read source monster data
+        source_table_addr = table_addresses[source_wave]
+        source_offset = source_table_addr + source_position * MONSTER_STRUCT_SIZE
+        source_monster_data = _read_bytes(questFilePath, source_offset, MONSTER_STRUCT_SIZE)
+        source_monster_dict = unpack_monster_struct(source_monster_data)
+        
+        # Read target monster data
+        target_table_addr = table_addresses[target_wave]
+        target_offset = target_table_addr + target_position * MONSTER_STRUCT_SIZE
+        target_monster_data = _read_bytes(questFilePath, target_offset, MONSTER_STRUCT_SIZE)
+        target_monster_dict = unpack_monster_struct(target_monster_data)
+        
+        # Perform the swap
+        write_monster_struct_at(questFilePath, source_offset, target_monster_dict)
+        write_monster_struct_at(questFilePath, target_offset, source_monster_dict)
+        
+        print(f"[INFO] Successfully swapped monster {monster_id} to wave {target_wave}, position {target_position}")
+        print(f"[INFO] Monster {target_monster_dict.get('monster_id')} moved to wave {source_wave}, position {source_position}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to swap monsters: {e}")
+        return False
+
+def get_wave_monster_count(questFilePath: str, wave_index: int) -> int:
+    """
+    Returns the number of monsters in a specific wave (table).
+    
+    Args:
+        questFilePath: Path to the quest file
+        wave_index: Index of the wave/table to check
+    
+    Returns:
+        int: Number of monsters in the wave, or -1 if wave doesn't exist
+    """
+    parsed = parse_mib(questFilePath)
+    large_monster_tables = parsed.get('large_monster_table', [])
+    
+    if wave_index < 0 or wave_index >= len(large_monster_tables):
+        return -1
+    
+    return len(large_monster_tables[wave_index])
+
+def get_waves_with_multiple_monsters(questFilePath: str) -> list:
+    """
+    Returns a list of wave indices that contain 2 or more monsters.
+    
+    Args:
+        questFilePath: Path to the quest file
+    
+    Returns:
+        list: List of wave indices with 2+ monsters
+    """
+    parsed = parse_mib(questFilePath)
+    large_monster_tables = parsed.get('large_monster_table', [])
+    
+    waves_with_multiple = []
+    for wave_idx, wave in enumerate(large_monster_tables):
+        if len(wave) >= 2:
+            waves_with_multiple.append(wave_idx)
+    
+    return waves_with_multiple
+
+def has_wave_with_multiple_monsters(questFilePath: str) -> bool:
+    """
+    Checks if any wave contains 2 or more monsters.
+    
+    Args:
+        questFilePath: Path to the quest file
+    
+    Returns:
+        bool: True if any wave has 2+ monsters, False otherwise
+    """
+    return len(get_waves_with_multiple_monsters(questFilePath)) > 0
+
+def get_monster_wave_position(questFilePath: str, monster_id: int) -> tuple:
+    """
+    Returns the wave and position of a specific monster.
+    
+    Args:
+        questFilePath: Path to the quest file
+        monster_id: ID of the monster to find
+    
+    Returns:
+        tuple: (wave_index, position_index) or (-1, -1) if not found
+    """
+    parsed = parse_mib(questFilePath)
+    large_monster_tables = parsed.get('large_monster_table', [])
+    
+    for wave_idx, wave in enumerate(large_monster_tables):
+        for pos_idx, monster in enumerate(wave):
+            if monster.get('monster_id') == monster_id:
+                return (wave_idx, pos_idx)
+    
+    return (-1, -1)
+
+def print_wave_summary(questFilePath: str):
+    """
+    Prints a summary of all waves and their monsters.
+    
+    Args:
+        questFilePath: Path to the quest file
+    """
+    parsed = parse_mib(questFilePath)
+    large_monster_tables = parsed.get('large_monster_table', [])
+    
+    print(f"[INFO] Wave Summary for {os.path.basename(questFilePath)}:")
+    print(f"[INFO] Total waves: {len(large_monster_tables)}")
+    
+    for wave_idx, wave in enumerate(large_monster_tables):
+        print(f"[INFO] Wave {wave_idx}: {len(wave)} monster(s)")
+        for pos_idx, monster in enumerate(wave):
+            monster_id = monster.get('monster_id', 0)
+            monster_name = VariousLists.getMonsterName(monster_id)
+            print(f"[INFO]   Position {pos_idx}: {monster_name} (ID: {monster_id})")
+
+def createEmptyWave(questFilePath: str, default_monster_id: int = 1):
+    """
+    Creates a new empty wave (table) in the quest file with a single placeholder monster.
+    
+    Args:
+        questFilePath: Path to the quest file
+        default_monster_id: ID of the placeholder monster to add (default: 1, Great Jaggi)
+        
+    Returns:
+        bool: True if successful, False otherwise
+        
+    Note:
+        - This function adds a new wave at the end of the existing waves
+        - The new wave will contain a single placeholder monster that can be replaced later
+        - Maximum of 3 waves are supported in MH4U
+    """
+    try:
+        # Parse the quest file to get current state
+        parsed = parse_mib(questFilePath)
+        large_monster_tables = parsed.get('large_monster_table', [])
+        
+        # Check if we already have the maximum number of waves (3)
+        if len(large_monster_tables) >= 3:
+            print(f"[ERROR] Cannot create new wave: maximum of 3 waves already exist.")
+            return False
+            
+        # Get file size for alignment and bounds checking
+        file_size = os.path.getsize(questFilePath)
+        
+        # 1. Create a new monster table with a single monster and terminator
+        # Monster structure is 0x28 (40) bytes, plus 4 bytes for terminator
+        new_table_size = 0x28 + 4
+        
+        # Align to 16-byte boundary for new table
+        aligned_size = ((file_size + 15) // 16) * 16
+        new_table_addr = aligned_size
+        
+        # Create monster structure (40 bytes)
+        # Format: monster_id, qty, condition, area, crashflag, special, unk2, unk3, unk4, infection, x, y, z, x_rot, y_rot, z_rot
+        monster_struct = struct.pack("<II8BfffIII", 
+            default_monster_id,  # monster_id
+            1,                   # qty
+            0,                   # condition
+            1,                   # area (default to area 1)
+            0, 0, 0, 0, 0, 0,    # flags and unknowns
+            0.0, 0.0, 0.0,       # position (x, y, z)
+            0, 0, 0              # rotation (x_rot, y_rot, z_rot)
+        )
+        
+        # Add terminator (0xFFFFFFFF)
+        terminator = struct.pack("<I", 0xFFFFFFFF) + b'\x00' * (0x28 - 4)
+        
+        # Combine monster and terminator
+        new_table_data = monster_struct + terminator[:4]  # Only need first 4 bytes of terminator
+        
+        # 2. Write the new table to the end of the file
+        with open(questFilePath, 'r+b') as f:
+            f.seek(aligned_size)
+            f.write(new_table_data)
+        
+        # 3. Update the large monster table pointer list
+        base_ptr_list_addr = read_dword(questFilePath, 0x28)
+        if base_ptr_list_addr == 0:
+            print(f"[ERROR] Invalid large monster table pointer at offset 0x28")
+            return False
+            
+        # Read existing pointers
+        table_addresses = read_dword_array_until_zero(questFilePath, base_ptr_list_addr)
+        
+        # Calculate where to write the new pointer
+        # Each pointer is 4 bytes, plus 4 bytes for terminator
+        ptr_offset = base_ptr_list_addr + len(table_addresses) * 4
+        
+        # Write new table address and update terminator
+        write_dword_at(questFilePath, ptr_offset, new_table_addr)
+        write_dword_at(questFilePath, ptr_offset + 4, 0)  # New terminator
+        
+        print(f"[INFO] Successfully created new wave {len(table_addresses)} with placeholder monster (ID: {default_monster_id})")
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to create new wave: {e}")
+        return False
+
+def deleteLastWave(questFilePath: str):
+    """
+    Deletes the last wave (table) from the quest file.
+    
+    Args:
+        questFilePath: Path to the quest file
+        
+    Returns:
+        bool: True if successful, False otherwise
+        
+    Note:
+        - This function removes the last wave in the large_monster_table
+        - It does not physically delete data from the file, only updates pointers
+        - At least one wave must remain after deletion
+    """
+    try:
+        # Parse the quest file to get current state
+        parsed = parse_mib(questFilePath)
+        large_monster_tables = parsed.get('large_monster_table', [])
+        
+        # Check if we have enough waves to delete one (must keep at least 1)
+        if len(large_monster_tables) <= 1:
+            print(f"[ERROR] Cannot delete last wave: at least one wave must remain.")
+            return False
+            
+        # Get the large monster table pointer list address
+        base_ptr_list_addr = read_dword(questFilePath, 0x28)
+        if base_ptr_list_addr == 0:
+            print(f"[ERROR] Invalid large monster table pointer at offset 0x28")
+            return False
+            
+        # Read existing pointers
+        table_addresses = read_dword_array_until_zero(questFilePath, base_ptr_list_addr)
+        
+        # Calculate where to write the new terminator (overwrite last pointer)
+        # Each pointer is 4 bytes
+        new_terminator_offset = base_ptr_list_addr + (len(table_addresses) - 1) * 4
+        
+        # Write new terminator (0) to effectively remove the last wave
+        write_dword_at(questFilePath, new_terminator_offset, 0)
+        
+        print(f"[INFO] Successfully deleted wave {len(table_addresses) - 1}")
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to delete last wave: {e}")
+        return False
 
 questFolder= getQuestFolder()
 if __name__ == "__main__":
