@@ -468,7 +468,6 @@ def findNonUniqueMonsterInWavesAndNotInFirstWave(allWaves: list) -> list:
       [monster_id, wave_index, monster_position_in_wave] if found,
       otherwise [-1, -1, -1].
     """
-    # load unique list once for efficiency
     unique_set = set(VariousLists.uniqueMonstersList())
 
     # iterate waves from last to first, but skip wave 0
@@ -482,97 +481,355 @@ def findNonUniqueMonsterInWavesAndNotInFirstWave(allWaves: list) -> list:
 
     return [-1, -1, -1]
 
+
 def fixExtremeCase1Unique1NormalInWave0(questFilePath: str, uniqueMonsterId: int):
     """
-    Fixes the extreme case where there is only one unique monster and 1 monster in normal in wave 0.
-    Creates a new wave with no monsters
-    Moves the unique monster to the new wave.
-
-    Parameters:
-        allWaves (list): List of wave lists, each containing monster IDs.
+    Fix the extreme case where wave0 has [unique, normal] and total monsters == 2.
+    Procedure:
+      - create an empty wave (reparse to get its real index)
+      - find the source (table, pos) of the unique
+      - swap unique -> new_table_index pos 0
+      - delete the placeholder that remained at the source position
     """
-    QuestEditor.createEmptyWave(questFilePath)
-    QuestEditor.swap_large_monster(questFilePath, uniqueMonsterId, 0, 0) #First goes to 0,0
-    QuestEditor.swap_large_monster(questFilePath, uniqueMonsterId, 1, 0)#Then to 1,0
-    monsterToObliterate= { 'table_index': 0, 
-                            'monster_index': 0 }#Eliminate the Rathian Placeholder
-    QuestEditor.delete_from_large_table(questFilePath, monsterToObliterate)
+    # create new empty wave and reparse to get its index
+    created = QuestEditor.createEmptyWave(questFilePath)
+    if not created:
+        print("[ERROR] createEmptyWave failed in fixExtremeCase1Unique1NormalInWave0")
+        return False
 
-  
-    
+    parsed = QuestEditor.parse_mib(questFilePath)
+    tables = parsed.get('large_monster_table', [])
+    new_table_index = len(tables) - 1
+    if new_table_index < 0:
+        print("[ERROR] no tables after createEmptyWave")
+        return False
+
+    # find the current instance (table, pos) of the unique monster BEFORE the swap
+    src_table = -1
+    src_pos = -1
+    for ti, table in enumerate(tables):
+        for mi, m in enumerate(table):
+            if m.get('monster_id') == uniqueMonsterId:
+                src_table = ti
+                src_pos = mi
+                break
+        if src_table != -1:
+            break
+
+    if src_table == -1:
+        print(f"[ERROR] unique monster {uniqueMonsterId} not found after createEmptyWave")
+        return False
+
+    # move unique to the new table (swap by monster id is safe: unique is unique)
+    success = QuestEditor.swap_large_monster(questFilePath, uniqueMonsterId, new_table_index, 0)
+    if not success:
+        print(f"[ERROR] swap_large_monster failed for unique {uniqueMonsterId} -> table {new_table_index}")
+        return False
+
+    # delete the placeholder that now sits at the original source (it was swapped there)
+    ok_del = QuestEditor.delete_from_large_table(questFilePath, {'table_index': src_table, 'monster_index': src_pos})
+    if not ok_del:
+        print("[ERROR] delete_from_large_table failed in extreme fix; file may be inconsistent")
+        return False
+
+    return True
 
 
+
+def validateArenaAndMusicSettings(full_path: str):
+    """
+    Validates and fixes arena and music settings after map assignment.
+    - If settingNoMoreThanOneInArena is active and quest is in arena map with multi-monster waves, fix it
+    - If settingAlwaysMusic is active and quest is in non-musical arena without musical monsters, add one
+    """
+    try:
+        parsed = QuestEditor.parse_mib(full_path)
+        quest_map_id = QuestEditor.get_map_id(full_path)
+        rawWaves = parsed.get('large_monster_table', [])
+        
+        arena_maps = VariousLists.getArenaMapsList()
+        no_musical_maps = VariousLists.getNoMusicalMapsList()
+        musical_monsters = VariousLists.getMusicalMonstersList()
+        
+        is_arena_map = quest_map_id in arena_maps
+        is_no_musical_map = quest_map_id in no_musical_maps
+        
+        # Check arena restriction
+        if settingNoMoreThanOneInArena and is_arena_map:
+            # Find waves with multiple monsters
+            for wave_idx, wave in enumerate(rawWaves):
+                if len(wave) > 1:
+                    print(f"[INFO] Arena map {quest_map_id} has multi-monster wave {wave_idx}, fixing...")
+                    # Move all but first monster to later waves or create new waves
+                    monsters_to_move = wave[1:]  # All except first
+                    
+                    # Remove extra monsters from current wave
+                    for i in range(len(monsters_to_move) - 1, -1, -1):
+                        QuestEditor.delete_from_large_table(full_path, {'table_index': wave_idx, 'monster_index': i + 1})
+                    
+                    # Add them to later waves or create new waves
+                    for monster in monsters_to_move:
+                        # Try to find an empty wave first
+                        empty_wave_idx = -1
+                        for w_idx, w in enumerate(rawWaves):
+                            if w_idx > wave_idx and len(w) == 0:
+                                empty_wave_idx = w_idx
+                                break
+                        
+                        if empty_wave_idx != -1:
+                            # Add to empty wave
+                            QuestEditor.add_monster_to_wave(full_path, empty_wave_idx, monster['monster_id'])
+                        else:
+                            # Create new wave
+                            QuestEditor.createEmptyWave(full_path)
+                            # Reparse to get updated structure
+                            parsed = QuestEditor.parse_mib(full_path)
+                            new_wave_idx = len(parsed.get('large_monster_table', [])) - 1
+                            QuestEditor.add_monster_to_wave(full_path, new_wave_idx, monster['monster_id'])
+                    
+                    # Reparse after changes
+                    parsed = QuestEditor.parse_mib(full_path)
+                    rawWaves = parsed.get('large_monster_table', [])
+        
+        # Check music requirement
+        if settingAlwaysMusic and is_no_musical_map:
+            # Check if any monster in the quest is musical
+            has_musical_monster = False
+            for wave in rawWaves:
+                for monster in wave:
+                    if monster.get('monster_id') in musical_monsters:
+                        has_musical_monster = True
+                        break
+                if has_musical_monster:
+                    break
+            
+            if not has_musical_monster:
+                print(f"[INFO] Non-musical arena map {quest_map_id} needs a musical monster, adding one...")
+                # Replace the first non-unique monster with a musical one
+                for wave_idx, wave in enumerate(rawWaves):
+                    for monster_idx, monster in enumerate(wave):
+                        monster_id = monster.get('monster_id')
+                        if monster_id not in VariousLists.uniqueMonstersList():
+                            # Replace with a random musical monster
+                            musical_replacement = random.choice(musical_monsters)
+                            QuestEditor.find_and_replace_monster_individual(full_path, monster_id, musical_replacement, False)
+                            print(f"[INFO] Replaced monster {monster_id} with musical monster {musical_replacement}")
+                            return
+                            
+    except Exception as e:
+        print(f"[ERROR] Failed to validate arena/music settings: {e}")
 
 def fixQuestMonsters(full_path: str):
     """
-    Fixes quest monsters to ensure proper unique monster placement.
-    
-    Rules:
-    1. Only one unique monster per quest
-    2. Unique monsters must be in the last wave (except single monster quests)
-    3. Akantor and Ukanlos can be in any wave but need specific maps if in first wave
-    4. Other unique monsters need specific maps if in first wave but should be in last wave
+    Fixes quest monsters to ensure proper unique monster placement and Akantor/Ukanlos handling.
+    - Only one unique per quest (reroll until satisfied)
+    - If a single unique exists and it's in wave0, move it to a non-first wave (prefer last or empty wave)
+    - Handle Akantor/Ukanlos special placement rules
     """
+    # parse and build helper lists
+    parsed = QuestEditor.parse_mib(full_path)
+    rawWaves = parsed.get('large_monster_table', [])
+    quest_map_id = QuestEditor.get_map_id(full_path)
+    akantor_ukanlos = VariousLists.akantorAndUkanlos()  # [33, 116]
     
-    rawWaves= QuestEditor.parse_mib(full_path)['large_monster_table']
-    allWaves=[]
-    uniqueMons=[]
-    mcount=0
-    for wave in rawWaves:
-        idList=[]
-        for m in wave:
-            idList.append(m['monster_id'])
-            if m['monster_id'] in VariousLists.uniqueMonstersList():
-                uniqueMons.append(m['monster_id'])
-            mcount+=1
-        allWaves.append(idList)
-    
-    # Ensure only one unique monster per quest
+    def build_lists_from_raw(raw):
+        aw = []
+        u = []
+        mc = 0
+        for w in raw:
+            ids = []
+            for m in w:
+                ids.append(m['monster_id'])
+                if m['monster_id'] in VariousLists.uniqueMonstersList():
+                    u.append(m['monster_id'])
+                mc += 1
+            aw.append(ids)
+        return aw, u, mc
+
+    allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
+
+    # If more than 1 unique -> reroll until <=1 (safe loop with attempt limit)
+    attempts = 0
+    while len(uniqueMons) > 1 and attempts < 5:
+        randomizeQuest(full_path)  # reroll
+        parsed = QuestEditor.parse_mib(full_path)
+        rawWaves = parsed.get('large_monster_table', [])
+        allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
+        attempts += 1
     if len(uniqueMons) > 1:
-        randomizeQuest(full_path) #reroll
-        rawWaves= QuestEditor.parse_mib(full_path)['large_monster_table']
+        print("[WARNING] Could not reduce uniques to 1 after rerolls")
+        # continue anyway
 
-    elif len(uniqueMons) == 1 and mcount == 2:
-        if(len(allWaves[0]) == 2):
-            fixExtremeCase1Unique1NormalInWave0(full_path, uniqueMons[0])
-    #If there is only one unique monster and more than 2 monsters in total,
-    #we need to move the unique monster to the last wave, if the last wave is also the first, 
-    #we need to create a new empty wave and move it to there
-    elif len(uniqueMons) == 1 and mcount >2:
-        def checkForEmptyWavesAndReturnFirst(allWaves:list):
-            found= False
-            index=-1
-            i=0
-            for wave in allWaves:
-                if len(wave) == 0 and not found:
-                    found= True
-                    index= i
-                i+=1
-            return index
+    # reparse state fresh (defensive)
+    parsed = QuestEditor.parse_mib(full_path)
+    rawWaves = parsed.get('large_monster_table', [])
+    allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
 
-        uniqueMonsterId= uniqueMons[0]
-        if uniqueMonsterId in allWaves[0]:
-            uniquePosInWave0=1
-            if allWaves[0][0] == uniqueMonsterId:
-                uniquePosInWave0=0
+    # handle single-unique cases
+    if len(uniqueMons) == 1:
+        uniqueMonsterId = uniqueMons[0]
 
-            emptyWaveIndex = checkForEmptyWavesAndReturnFirst(allWaves)
-            if emptyWaveIndex == -1:
-                replacement=findNonUniqueMonsterInWavesAndNotInFirstWave(allWaves)
-                if replacement !=[-1,-1,-1]:
-                    QuestEditor.swap_large_monster(full_path, replacement[0], replacement[1], replacement[2])
-                    temp= allWaves[replacement[1]][replacement[2]]
-                    allWaves[replacement[1]][replacement[2]]= uniqueMonsterId
-                    allWaves[0][uniquePosInWave0]= temp
+        # if only 2 monsters total and both in wave0 -> extreme case
+        if mcount == 2 and len(allWaves) >= 1 and len(allWaves[0]) == 2:
+            fixExtremeCase1Unique1NormalInWave0(full_path, uniqueMonsterId)
+            # reparse for safety
+            parsed = QuestEditor.parse_mib(full_path)
+            rawWaves = parsed.get('large_monster_table', [])
+            allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
+            return
+
+        # if unique is in wave0 and there are more than two monsters total -> move it out
+        if mcount > 1 and len(allWaves) >= 1 and uniqueMonsterId in allWaves[0]:
+            # find unique position robustly
+            try:
+                uniquePos = allWaves[0].index(uniqueMonsterId)
+            except ValueError:
+                print("[ERROR] unique present in allWaves[0] but index() failed")
+                return
+
+            # helper: find first empty wave index (or -1)
+            def first_empty_wave_index(aw):
+                for idx, w in enumerate(aw):
+                    if len(w) == 0:
+                        return idx
+                return -1
+
+            empty_idx = first_empty_wave_index(allWaves)
+            if empty_idx != -1:
+                # move unique to empty wave
+                success = QuestEditor.swap_large_monster(full_path, uniqueMonsterId, empty_idx, 0)
+                if success:
+                    # after swap the placeholder is where unique used to be; delete it
+                    ok_del = QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': uniquePos})
+                    if ok_del:
+                        # update local representation
+                        allWaves[empty_idx].append(uniqueMonsterId)
+                        allWaves[0].pop(uniquePos)
+                else:
+                    print(f"[ERROR] swap to empty wave failed for unique {uniqueMonsterId}")
+                return
             else:
-                uniquePos= allWaves[0].index(uniqueMonsterId)   
-                QuestEditor.swap_large_monster(full_path, uniqueMonsterId, emptyWaveIndex, 0)
-                QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': uniquePos})
-                allWaves[emptyWaveIndex].append(uniqueMonsterId)
-                allWaves[0].remove(uniqueMonsterId)
-              
+                # no empty wave: choose replacement slot (the last non-unique outside wave0)
+                replacement = findNonUniqueMonsterInWavesAndNotInFirstWave(allWaves)
+                if replacement != [-1, -1, -1]:
+                    # replacement = [monster_id, wave_idx, pos]
+                    # move unique into that replacement's slot
+                    rep_mid, rep_w, rep_pos = replacement
+                    success = QuestEditor.swap_large_monster(full_path, uniqueMonsterId, rep_w, rep_pos)
+                    if success:
+                        # update local allWaves safely
+                        allWaves[rep_w][rep_pos] = uniqueMonsterId
+                        allWaves[0][uniquePos] = rep_mid
+                    else:
+                        print(f"[ERROR] swap_large_monster failed moving unique {uniqueMonsterId} -> wave {rep_w} pos {rep_pos}")
+                    return
+                else:
+                    # fallback: try create new wave and move unique there
+                    created = QuestEditor.createEmptyWave(full_path)
+                    if not created:
+                        print("[ERROR] createEmptyWave failed as final fallback")
+                        return
+                    parsed = QuestEditor.parse_mib(full_path)
+                    new_idx = len(parsed.get('large_monster_table', [])) - 1
+                    success = QuestEditor.swap_large_monster(full_path, uniqueMonsterId, new_idx, 0)
+                    if success:
+                        # delete placeholder at old spot
+                        ok_del = QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': uniquePos})
+                        if ok_del:
+                            # update local
+                            allWaves.append([uniqueMonsterId])
+                            allWaves[0].pop(uniquePos)
+                    else:
+                        print("[ERROR] final fallback swap failed")
+                        return
 
-    
+    # Handle Akantor/Ukanlos special placement rules
+    # If they are on their specific maps (Akantor: 9, Ukanlos: 20), they can't be in first wave
+    # If they are on other maps, they must be in wave 2+ (randomly placed, not replacing uniques)
+    for wave_idx, wave in enumerate(allWaves):
+        for monster_id in wave:
+            if monster_id in akantor_ukanlos:
+                akantor_map = 9  # Ingle Isle
+                ukanlos_map = 20  # Polar Field
+                
+                # Check if monster is on its specific map
+                is_on_specific_map = (monster_id == 33 and quest_map_id == akantor_map) or \
+                                   (monster_id == 116 and quest_map_id == ukanlos_map)
+                
+                # If on specific map and in first wave, move to later wave
+                if is_on_specific_map and wave_idx == 0:
+                    print(f"[INFO] Moving {VariousLists.getMonsterName(monster_id)} from wave 1 on its specific map")
+                    # Find position in wave
+                    try:
+                        monster_pos = wave.index(monster_id)
+                    except ValueError:
+                        continue
+                    
+                    # Try to find empty wave or create one
+                    empty_wave_idx = -1
+                    for w_idx, w in enumerate(allWaves):
+                        if w_idx > 0 and len(w) == 0:
+                            empty_wave_idx = w_idx
+                            break
+                    
+                    if empty_wave_idx != -1:
+                        # Move to empty wave
+                        success = QuestEditor.swap_large_monster(full_path, monster_id, empty_wave_idx, 0)
+                        if success:
+                            QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
+                            allWaves[empty_wave_idx].append(monster_id)
+                            allWaves[0].pop(monster_pos)
+                    else:
+                        # Create new wave
+                        created = QuestEditor.createEmptyWave(full_path)
+                        if created:
+                            parsed = QuestEditor.parse_mib(full_path)
+                            new_wave_idx = len(parsed.get('large_monster_table', [])) - 1
+                            success = QuestEditor.swap_large_monster(full_path, monster_id, new_wave_idx, 0)
+                            if success:
+                                QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
+                                allWaves.append([monster_id])
+                                allWaves[0].pop(monster_pos)
+                
+                # If not on specific map, ensure it's in wave 2+ (but don't replace uniques)
+                elif not is_on_specific_map and wave_idx == 0:
+                    print(f"[INFO] Moving {VariousLists.getMonsterName(monster_id)} to wave 2+ on non-specific map")
+                    # Similar logic as above but for non-specific maps
+                    try:
+                        monster_pos = wave.index(monster_id)
+                    except ValueError:
+                        continue
+                    
+                    # Find a suitable wave (not first, and not replacing uniques)
+                    target_wave_idx = -1
+                    for w_idx, w in enumerate(allWaves):
+                        if w_idx > 0:
+                            # Check if wave has room or is empty
+                            has_unique = any(m_id in VariousLists.uniqueMonstersList() for m_id in w)
+                            if not has_unique and len(w) == 0:
+                                target_wave_idx = w_idx
+                                break
+                    
+                    if target_wave_idx != -1:
+                        success = QuestEditor.swap_large_monster(full_path, monster_id, target_wave_idx, 0)
+                        if success:
+                            QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
+                            allWaves[target_wave_idx].append(monster_id)
+                            allWaves[0].pop(monster_pos)
+                    else:
+                        # Create new wave for Akantor/Ukanlos
+                        created = QuestEditor.createEmptyWave(full_path)
+                        if created:
+                            parsed = QuestEditor.parse_mib(full_path)
+                            new_wave_idx = len(parsed.get('large_monster_table', [])) - 1
+                            success = QuestEditor.swap_large_monster(full_path, monster_id, new_wave_idx, 0)
+                            if success:
+                                QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
+                                allWaves.append([monster_id])
+                                allWaves[0].pop(monster_pos)
+
+    # if no unique or handled, done
+    return
 
         
  
@@ -592,7 +849,11 @@ def randomizeQuest(full_path: str):
         if settingRandomMap:            
             randomizeMap(full_path, monstersIDs)
         
-        # Always fix quest monsters to ensure unique monsters are in the correct waves
+        # Call the new arena and music validation after map assignment
+        if settingNoMoreThanOneInArena or settingAlwaysMusic:
+            validateArenaAndMusicSettings(full_path)
+        
+        # Always fix quest monsters to ensure unique monsters and Akantor/Ukanlos are in the correct waves
         fixQuestMonsters(full_path)
 
         
