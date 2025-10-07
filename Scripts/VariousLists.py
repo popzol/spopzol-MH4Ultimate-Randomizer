@@ -152,15 +152,16 @@ def uniqueMonstersList():
     return [
             117, # Crimson Fatalis (Super)
             110, # Shah Dalamadur (Head)
-            111, # Shah Dalamadur (Tail)
             89,  # Gogmazios
-            83,  # Dalamadur (Tail)
             79,  # White Fatalis
             78,  # Crimson Fatalis
             77,  # Black Fatalis
             46,  # Dah'ren Mohran
             24   # Dalamadur (Head)
            ]
+
+def akantorAndUkanlos()->list:
+    return [33,116]
 
 def subMapsOf(i: int)->list: 
     subMaps = {

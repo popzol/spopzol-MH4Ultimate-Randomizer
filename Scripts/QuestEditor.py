@@ -1110,7 +1110,7 @@ def delete_monster_by_id_first_instance(path: str, monster_id: int):
     print(f"Deleting first instance of monster {monster_id} at {first}")
     
     if first['type'] == 'large':
-        return _delete_from_large_table(path, first)
+        return delete_from_large_table(path, first)
     elif first['type'] == 'small':
         return _delete_from_small_table(path, first)
     elif first['type'] == 'unstable':
@@ -1119,7 +1119,7 @@ def delete_monster_by_id_first_instance(path: str, monster_id: int):
     return False
 
 
-def _delete_from_large_table(path: str, monster_info: dict) -> bool:
+def delete_from_large_table(path: str, monster_info: dict) -> bool:
     """
     Deletes a monster from a large table and shifts remaining monsters.
     """
@@ -2732,7 +2732,7 @@ def swap_large_monster(questFilePath: str, monster_id: int, target_wave: int, ta
     Args:
         questFilePath: Path to the quest file
         monster_id: ID of the monster to move
-        target_wave: Target wave/table index (0-2, max 3 waves)
+        target_wave: Target wave/table index (0-2)
         target_position: Position within the target wave (0-1, max 2 monsters per wave)
     
     Returns:
@@ -2756,9 +2756,7 @@ def swap_large_monster(questFilePath: str, monster_id: int, target_wave: int, ta
         print(f"[ERROR] Invalid target wave {target_wave}. Must be between 0 and {len(large_monster_tables) - 1}.")
         return False
     
-    if target_wave >= 3:
-        print(f"[ERROR] Target wave {target_wave} exceeds maximum of 3 waves.")
-        return False
+    
     
     target_table = large_monster_tables[target_wave]
     
@@ -2913,6 +2911,149 @@ def print_wave_summary(questFilePath: str):
             monster_name = VariousLists.getMonsterName(monster_id)
             print(f"[INFO]   Position {pos_idx}: {monster_name} (ID: {monster_id})")
 
+def move_monster_to_empty_table(questFilePath: str, monster_id: int, target_wave: int):
+    """
+    SAFELY moves a monster to a completely empty table/wave.
+    
+    SECURITY FEATURES:
+    - Only works if the target table is COMPLETELY EMPTY
+    - Does not allow moving if there are any monsters in the target table
+    - Verifies that the monster exists in another table
+    - Maintains terminator integrity
+    - Does not exceed the limit of 2 monsters per wave
+    
+    Args:
+        questFilePath: Path to the quest file
+        monster_id: ID of the monster to move
+        target_wave: Target wave (0-2) that must be EMPTY
+    
+    Returns:
+        bool: True if movement was successful, False otherwise
+    """
+    try:
+        # Parse the quest file
+        parsed = parse_mib(questFilePath)
+        large_monster_tables = parsed.get('large_monster_table', [])
+        
+        # Basic validations
+        if not large_monster_tables:
+            print(f"[ERROR] No large monster tables found.")
+            return False
+        
+        # Validate target_wave
+        if target_wave < 0 or target_wave >= len(large_monster_tables):
+            print(f"[ERROR] Invalid target wave {target_wave}. Must be between 0 and {len(large_monster_tables) - 1}.")
+            return False
+        
+        target_table = large_monster_tables[target_wave]
+        
+        # CRITICAL VERIFICATION: Target table MUST be empty
+        if len(target_table) != 0:
+            print(f"[ERROR] Wave {target_wave} is NOT empty. It has {len(target_table)} monster(s).")
+            print(f"[INFO] This function only moves monsters to COMPLETELY EMPTY waves.")
+            return False
+        
+        # Find the source monster
+        source_wave = -1
+        source_position = -1
+        source_monster_dict = None
+        
+        for wave_idx, wave in enumerate(large_monster_tables):
+            for pos_idx, monster in enumerate(wave):
+                if monster.get('monster_id') == monster_id:
+                    source_wave = wave_idx
+                    source_position = pos_idx
+                    source_monster_dict = monster
+                    break
+            if source_wave != -1:
+                break
+        
+        if source_wave == -1:
+            print(f"[ERROR] Monster ID {monster_id} not found in any wave.")
+            return False
+        
+        # Verify we're not trying to move to the same wave
+        if source_wave == target_wave:
+            print(f"[ERROR] The monster is already in wave {target_wave}.")
+            return True  # Consider this a success since it's already where we want it
+        
+        print(f"[INFO] Moving monster {monster_id} from wave {source_wave} position {source_position} to wave {target_wave} (empty)")
+        
+        # Get table addresses
+        table_addresses = get_large_monster_table_addresses(questFilePath)
+        
+        # CALCULATE OFFSETS
+        source_table_addr = table_addresses[source_wave]
+        source_offset = source_table_addr + source_position * MONSTER_STRUCT_SIZE
+        
+        target_table_addr = table_addresses[target_wave]
+        target_offset = target_table_addr  # Position 0 in empty table
+        
+        # STEP 1: WRITE MONSTER TO DESTINATION (position 0)
+        print(f"[DEBUG] Writing monster to destination: offset 0x{target_offset:X}")
+        write_monster_struct_at(questFilePath, target_offset, source_monster_dict)
+        
+        # STEP 2: WRITE TERMINATOR at destination (position 1)
+        terminator_offset = target_offset + MONSTER_STRUCT_SIZE
+        print(f"[DEBUG] Writing terminator at destination: offset 0x{terminator_offset:X}")
+        write_dword_at(questFilePath, terminator_offset, 0xFFFFFFFF)
+        
+        # STEP 3: CLEAN UP SOURCE - depends on how many monsters are in the source wave
+        source_table = large_monster_tables[source_wave]
+        num_monsters_in_source = len(source_table)
+        
+        if num_monsters_in_source == 1:
+            # Simple case: it was the only monster, place terminator
+            print(f"[DEBUG] It was the only monster in wave {source_wave}, placing terminator")
+            write_dword_at(questFilePath, source_table_addr, 0xFFFFFFFF)
+        else:
+            # Complex case: multiple monsters, need to reorganize
+            if source_position == 0:
+                # Was in first position, move second monster to first position
+                second_monster = source_table[1]
+                second_monster_offset = source_table_addr + MONSTER_STRUCT_SIZE
+                
+                print(f"[DEBUG] Moving monster from position 1 to position 0 in wave {source_wave}")
+                write_monster_struct_at(questFilePath, source_table_addr, second_monster)
+                write_dword_at(questFilePath, second_monster_offset, 0xFFFFFFFF)
+            else:
+                # Was in second position, just place terminator where it was
+                print(f"[DEBUG] Removing monster from position 1 in wave {source_wave}")
+                write_dword_at(questFilePath, source_offset, 0xFFFFFFFF)
+        
+        # FINAL VERIFICATION
+        print(f"[INFO] Verifying the movement...")
+        updated_parsed = parse_mib(questFilePath)
+        updated_target = updated_parsed['large_monster_table'][target_wave]
+        updated_source = updated_parsed['large_monster_table'][source_wave]
+        
+        # Verify destination has exactly 1 monster
+        if len(updated_target) != 1:
+            print(f"[ERROR] Target wave should have 1 monster, but has {len(updated_target)}")
+            return False
+        
+        # Verify the correct monster is in the destination
+        if updated_target[0].get('monster_id') != monster_id:
+            print(f"[ERROR] Monster in destination doesn't match: expected {monster_id}, found {updated_target[0].get('monster_id')}")
+            return False
+        
+        # Verify source has one less monster
+        expected_source_count = num_monsters_in_source - 1
+        if len(updated_source) != expected_source_count:
+            print(f"[ERROR] Source wave should have {expected_source_count} monsters, but has {len(updated_source)}")
+            return False
+        
+        print(f"[SUCCESS] Monster {monster_id} successfully moved to empty wave {target_wave}")
+        print(f"[RESULT] Wave {target_wave} now has: {VariousLists.getMonsterName(monster_id)}")
+        print(f"[RESULT] Wave {source_wave} now has: {len(updated_source)} monster(s)")
+        
+        return True
+        
+    except Exception as e:
+        print(f"[CRITICAL ERROR] Error during movement: {e}")
+        print(f"[INFO] Recommendation: Restore file from backup")
+        return False
+        
 def createEmptyWave(questFilePath: str, default_monster_id: int = 1):
     """
     Creates a new empty wave (table) in the quest file with a single placeholder monster.
@@ -2927,7 +3068,6 @@ def createEmptyWave(questFilePath: str, default_monster_id: int = 1):
     Note:
         - This function adds a new wave at the end of the existing waves
         - The new wave will contain a single placeholder monster that can be replaced later
-        - Maximum of 3 waves are supported in MH4U
     """
     try:
         # Parse the quest file to get current state
@@ -2935,9 +3075,7 @@ def createEmptyWave(questFilePath: str, default_monster_id: int = 1):
         large_monster_tables = parsed.get('large_monster_table', [])
         
         # Check if we already have the maximum number of waves (3)
-        if len(large_monster_tables) >= 3:
-            print(f"[ERROR] Cannot create new wave: maximum of 3 waves already exist.")
-            return False
+
             
         # Get file size for alignment and bounds checking
         file_size = os.path.getsize(questFilePath)
