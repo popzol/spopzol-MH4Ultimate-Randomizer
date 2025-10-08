@@ -650,7 +650,7 @@ def fixQuestMonsters(full_path: str):
 
     # If more than 1 unique -> reroll until <=1 (safe loop with attempt limit)
     attempts = 0
-    while len(uniqueMons) > 1 and attempts < 5:
+    while len(uniqueMons) > 1 and attempts < 99:
         randomizeQuest(full_path)  # reroll
         parsed = QuestEditor.parse_mib(full_path)
         rawWaves = parsed.get('large_monster_table', [])
@@ -697,7 +697,7 @@ def fixQuestMonsters(full_path: str):
             empty_idx = first_empty_wave_index(allWaves)
             if empty_idx != -1:
                 # move unique to empty wave
-                success = QuestEditor.swap_large_monster(full_path, uniqueMonsterId, empty_idx, 0)
+                success = QuestEditor.move_monster_to_empty_table(full_path, uniqueMonsterId, empty_idx)
                 if success:
                     # after swap the placeholder is where unique used to be; delete it
                     ok_del = QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': uniquePos})
