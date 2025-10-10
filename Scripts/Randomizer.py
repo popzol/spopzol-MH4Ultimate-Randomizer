@@ -1,14 +1,16 @@
-from ast import List
-from enum import unique
-from operator import index, ne
-from queue import Empty
-import VariousLists
-import QuestEditor
+# ============================================================================
+# IMPORTS
+# ============================================================================
 import os
 import shutil
-from pathlib import Path
+import time
 import random
+import VariousLists
+import QuestEditor
 
+# ============================================================================
+# CONFIG & SETTINGS
+# ============================================================================
 AVAILABLE_MAPS = [1,2,3,4,5,6,7,8,9,10,11,12,14,15,16,17,18,19,20,21]  # Avoid map 13
 
 GVseed=""
@@ -19,897 +21,643 @@ settingNoMoreThanOneInArena= True
 settingSoloBalance= True
 settingAllowUniqueMonsters = True
 
+# ============================================================================
+# CORE FUNCTIONS
+# ============================================================================
+
+def setSeed(Seed: str):
+    global GVseed
+    GVseed = Seed
+    random.seed(Seed)
+
+def getSeed() -> str:
+    return GVseed
+
 def resetQuestFiles():
-    """
-    Resets the quest files by deleting the current loc folder and replacing it with
-    a fresh copy from the og_loc folder.
-    
-    This function should be called at the start of the randomization process to ensure
-    we're working with the original quest files.
-    """
+    """Reset quest files by copying from og_loc backup."""
     try:
-        # Define paths
         scripts_dir = os.path.dirname(os.path.abspath(__file__))
         loc_path = os.path.join(scripts_dir, "loc")
         og_loc_path = os.path.join(scripts_dir, "og_loc", "loc")
         
-        # Delete the current loc folder if it exists
+        def _on_rm_error(func, path, exc_info):
+            try:
+                os.chmod(path, 0o777)
+                if not os.path.isdir(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
         if os.path.exists(loc_path):
             print(f"[INFO] Deleting existing loc folder: {loc_path}")
-            shutil.rmtree(loc_path)
+            for attempt in range(5):
+                try:
+                    shutil.rmtree(loc_path, onerror=_on_rm_error)
+                    break
+                except Exception as e:
+                    if attempt == 4:
+                        raise e
+                    time.sleep(0.5)
         
-        # Copy the og_loc/loc folder to the scripts folder
         print(f"[INFO] Copying original quest files from: {og_loc_path}")
-        shutil.copytree(og_loc_path, loc_path)
+        shutil.copytree(og_loc_path, loc_path, dirs_exist_ok=True)
         print(f"[INFO] Quest files have been reset successfully")
         
     except Exception as e:
         print(f"[ERROR] Failed to reset quest files: {e}")
         raise
 
-def setSeed(Seed: str):
-    global GVseed
-    GVseed = Seed
-    random.seed(Seed)
-def getSeed()->str:
-    return GVseed
-
-#region Helper functions
-def getMonsterData(parsedMib: dict):
-    data=[]
-
-    for i in parsedMib['large_monster_table']:
-        for k in i:
-            data.append(k)
-    return data
-
-def getLargeMonstersIDs(parsedMib: dict)-> list:
-    l= []
-    monsterData=(getMonsterData(parsedMib))
-    for i in monsterData:
-        l.append(i['monster_id'])
-    return l
-
 def getQuestFolder():
-    # Get the absolute path of the current script
+    """Get the quest folder path."""
     script_path = os.path.abspath(__file__)
-    # Get the directory where the script is located
     base_folder = os.path.dirname(script_path)
-    # Build the path to loc/quest
-    target_folder = os.path.join(base_folder, "loc", "quest")
-    return target_folder
+    return os.path.join(base_folder, "loc", "quest")
 
-def randomHex(a:int , b:int):
-    value = random.randint(a, b)
-    return f"{value:02X}"
-
-def buildLargeMonsterIndexList(parsedMib: dict):
-    """
-    Devuelve lista de tuplas (table_index, monster_index, monster_id)
-    recorriendo parsedMib['large_monster_table'] respetando la estructura.
-    """
-    out = []
-    tables = parsedMib.get('large_monster_table', [])
-    for ti, table in enumerate(tables):
-        # table es lista de monster dicts
-        for mi, monster in enumerate(table):
-            mid = monster.get('monster_id')
-            out.append((ti, mi, mid))
-    return out
-
-def editMapData(questFilePath: str, newMonstersList: list, newMap: int):
-    """
-    newMonstersList: lista de monster_ids (puede ser devuelta por getLargeMonstersIDs),
-                     pero iteramos usando parsedMib para mapear índices reales.
-    Esta versión:
-      - selecciona areas/coords por monster en orden de tablas reales
-      - respeta casos en los que no hay suficientes monsters
-    """
-
-    # setear map id primero
-    QuestEditor.set_map_id_dynamic(questFilePath, newMap)
-
-    # conseguir parsedMib actualizado (por si el cambio del map afecta a estructura)
-    parsedMib = QuestEditor.parse_mib(questFilePath)
-
-    # lista de areas válidas para ese mapa
-    areaList = VariousLists.subMapsOf(newMap)
-    if not areaList:
-        print(f"[WARN] editMapData_fixed: no hay submaps para map {newMap}")
-        return
-
-    # construir lista con índices reales
-    index_list = buildLargeMonsterIndexList(parsedMib)
-    if not index_list:
-        print("[WARN] editMapData_fixed: no hay monstruos grandes en parsedMib")
-        return
-
-    # Si newMonstersList tiene exactamente el mismo tamaño que index_list -> emparejamos 1:1
-    # Si no, iteramos hasta min(len(index_list), len(newMonstersList)) y aplicamos aleatorio donde falte.
-    count = min(len(index_list), len(newMonstersList))
-
-    for idx in range(count):
-        table_index, monster_index, _old_mid = index_list[idx]
-        new_mid = newMonstersList[idx]  # asumes newMonstersList alineada; si no, podrías elegir aleatorio
-        # elegir area y coords válidos
-        newArea = random.choice(areaList)
-        newCoords = VariousLists.getListOfCoords(newMap, newArea)
-        if not newCoords or len(newCoords) < 2:
-            print(f"[WARN] no coords para map {newMap} area {newArea}")
-            continue
+def packQuestArc(output_arc_name="quest01.arc"):
+    """Pack quest files into ARC after randomization."""
+    import subprocess
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        repacker_path = os.path.join(script_dir, "customArcRepacker.py")
+        output_arc_path = os.path.join(script_dir, output_arc_name)
+        loc_dir = os.path.join(script_dir, "loc")
         
-        # setear area (usa índices reales)
-        # supongo que setAreaLarge(path, table_index, monster_index, area) es la firma correcta
-        try:
-            QuestEditor.setArea_large(questFilePath, table_index, monster_index, newArea)
-        except Exception as e:
-            print(f"[ERROR] setAreaLarge falló para table {table_index} idx {monster_index}: {e}")
-            continue
+        cmd = ["python", repacker_path, "c", output_arc_path, loc_dir]
+        print(f"[INFO] Packing quest files into {output_arc_name}...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"[SUCCESS] Quest files packed successfully into {output_arc_name}")
+        else:
+            print(f"[ERROR] Failed to pack quest files: {result.stderr}")
+            
+    except Exception as e:
+        print(f"[ERROR] Exception while packing quest files: {e}")
 
-        # setear coords (x,z) usando la función que añadiste
-        try:
-            QuestEditor.set_large_monster_position_by_indices(questFilePath, table_index, monster_index, newCoords[0], newCoords[1])
-        except Exception as e:
-            print(f"[ERROR] setLargeMonsterPosition... falló para table {table_index} idx {monster_index}: {e}")
-            continue
-    if(89 in newMonstersList and newMap == 19):
-        handleGogmazios(questFilePath)
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
-    print(f"[INFO] editMapData_fixed: aplicado map {newMap} en {count} monstruos.")
+def getLargeMonstersIDs(parsedMib: dict) -> list:
+    """Extract all monster IDs from the quest."""
+    monster_ids = []
+    for wave in parsedMib.get('large_monster_table', []):
+        for monster in wave:
+            monster_ids.append(monster.get('monster_id', 0))
+    return monster_ids
 
-
-def getMapForUniqueMonsterID(unique_monster_id: int) -> int:
-    """
-    Returns the map id for a quest with a single unique monster (by id).
-    """
+def getMapForUniqueMonster(monster_id: int) -> int:
+    """Get the required map for a unique monster."""
     monster_map = {
         24: 8, 83: 8, 110: 8, 111: 8,      # Dalamadurs (Head/Tail/Shah)
         46: 6,                             # Dahren Mohran
         116: 20,                           # Ukanlos
         77: 10, 79: 10,                    # Black/White Fatalis
-        78: 9, 117: 9, 33: 9,              # Crimson Fatalis (Super)/Akantor
+        78: 9, 117: 9, 33: 9,              # Crimson Fatalis/Akantor
         89: 19                             # Gogmazios
     }
-    if unique_monster_id in monster_map:
-        return monster_map[unique_monster_id]
-    return random.choice(AVAILABLE_MAPS)
+    return monster_map.get(monster_id, random.choice(AVAILABLE_MAPS))
 
-def checkMusicalMonsters(monster_list: list) -> bool:
-    """
-    Check if all monsters in the list are musical monsters.
-    Returns True if all monsters are musical, False otherwise.
-    """
-    if not settingAlwaysMusic:
-        return False
-        
-    for monster_id in monster_list:
-        if monster_id not in VariousLists.getMusicalMonstersList():
-            return False
-    return True
+def isArenaMap(map_id: int) -> bool:
+    """Check if a map is an arena map."""
+    return map_id in VariousLists.getArenaMapsList()
 
-def getPossibleMaps(newMonsterList: list ,allWaves: list,monsterList: list) -> list:
-    """
-    Get a list of possible maps based on settings and wave configuration.
-    Handles arena restrictions when any wave has multiple monsters.
-    """
-    possible_maps = AVAILABLE_MAPS.copy()
-    allAreMusical = checkMusicalMonsters(newMonsterList)
-    
-    if settingNoMoreThanOneInArena:
-        # Check if any wave has multiple monsters
-        has_multi_monster_wave = any(len(wave) > 1 for wave in allWaves)
-        if has_multi_monster_wave:
-            arena_maps = VariousLists.getArenaMapsList()
-            possible_maps = [m for m in possible_maps if m not in arena_maps]
-            print(f"[INFO] Excluding arena maps due to multi-monster waves: {arena_maps}")
-    
-    if not allAreMusical and settingAlwaysMusic:
-        possible_maps = [m for m in possible_maps if m not in VariousLists.getNoMusicalMapsList()]
-            
-    return possible_maps
+def isMusicalMonster(monster_id: int) -> bool:
+    """Check if a monster is musical."""
+    return monster_id in VariousLists.getMusicalMonstersList()
 
-def handleGogmazios(questFilePath: str):
-    """
-    Special handling for Gogmazios (monster ID 89).
-    Places it in area 3 of its map.
-    """
-    parsed = QuestEditor.parse_mib(questFilePath)
-    found = False
-    
-    for table_idx, table in enumerate(parsed.get('large_monster_table', [])):
-        for mon_idx, mon in enumerate(table):
-            if mon.get('monster_id') == 89:
-                try:
-                    QuestEditor.setArea_large(questFilePath, table_idx, mon_idx, 3)
-                    print(f"[INFO] setAreaLarge: placed monster 89 at table {table_idx} idx {mon_idx} area 3")
-                    found = True
-                except Exception as e:
-                    print(f"[ERROR] setAreaLarge falló: {e}")
-                break
-        if found:
-            break
-            
-    if not found:
-        print("[WARN] No se encontró monster_id 89 en large_monster_table — no se aplica área especial")
+def isDalamadurHead(monster_id: int) -> bool:
+    """Check if monster is a Dalamadur/Shah head."""
+    return monster_id in [24, 110]
 
-def selectMapForRegularMonsters(possible_maps: list, all_musical: bool) -> int:
-    """
-    Select an appropriate map for regular monsters.
-    Handles music settings if applicable.
-    """
-    new_map = random.choice(possible_maps)
-    
-    # If we need music and the map doesn't support it, keep trying
-    while (settingAlwaysMusic and 
-           new_map in VariousLists.getNoMusicalMapsList() and 
-           not all_musical):
-        new_map = random.choice(possible_maps)
-        
-    return new_map
+def getDalamadurTail(head_id: int) -> int:
+    """Get the tail ID for a Dalamadur/Shah head."""
+    return {24: 83, 110: 111}.get(head_id, 0)
 
-def selectTier1or2Monster():
-    """
-    Selects a random monster from tier 1 or tier 2 with a 50/50 chance.
-    Used for the second monster in 2-monster quests with 1 unique monster.
+def selectRandomMonster(tier: int = None, exclude_unique: bool = False) -> int:
+    """Select a random monster, optionally from a specific tier."""
+    if tier:
+        possible_monsters = VariousLists.monsterListFromTier(tier)
+    else:
+        possible_monsters = VariousLists.getLargeList()
     
-    Returns:
-        int: Monster ID from tier 1 or tier 2
-    """
-    # 50/50 chance to select tier 1 or tier 2
-    selected_tier = random.choice([1, 2])
-    possible_monsters = VariousLists.monsterListFromTier(selected_tier)
+    if exclude_unique:
+        unique_monsters = set(VariousLists.uniqueMonstersList())
+        possible_monsters = [m for m in possible_monsters if m not in unique_monsters]
+    
     return random.choice(possible_monsters)
 
-def hasDahrenMohran(questFilePath: str) -> bool:
-    """
-    Checks if a quest already contains a Dah'ren Mohran (ID 46).
+# ============================================================================
+# RANDOMIZATION LOGIC
+# ============================================================================
+
+def randomizeMonsters(quest_path: str, original_monsters: list) -> list:
+    """Randomize monsters based on progression setting."""
+    new_monsters = []
     
-    Args:
-        questFilePath: Path to the quest file
+    if settingProgresion:
+        # Progression-based randomization
+        parsed = QuestEditor.parse_mib(quest_path)
+        rank = parsed.get('quest_rank', 1)
+        tier_chances = VariousLists.tierChancesOfRank(rank)
+        all_tiers = [8, 7, 6, 5, 4, 3, 2, 1]
         
-    Returns:
-        bool: True if quest contains Dah'ren Mohran, False otherwise
-    """
-    try:
-        parsedMib = QuestEditor.parse_mib(questFilePath)
-        monstersIDs = getLargeMonstersIDs(parsedMib)
-        return 46 in monstersIDs
-    except Exception as e:
-        print(f"[ERROR] Failed to check for Dah'ren Mohran in quest: {e}")
-        return False
-
-def selectTier8MonsterNotUnique():
-    """
-    Selects a tier 8 monster, it is not unique
-
-    
-    Args:
-        questFilePath: Path to the quest file
-        
-    Returns:
-        int: Monster ID from tier 8, avoiding another unique monster
-    """
-    tier8_monsters = [m for m in VariousLists.monsterListFromTier(8) if m not in VariousLists.uniqueMonstersList()]
-    return random.choice(tier8_monsters)
-
-
-def randomizeMonstersNoProgression(monster_ids, quest_path):
-    large_id_list = VariousLists.getLargeList()
-    count = 0  # Initialize count variable
-    if settingAllowUniqueMonsters:
-        alreadyHasUnique = False
-        for mid in monster_ids:
-            if(alreadyHasUnique):
-                new_mon=random.choice([m for m in large_id_list if m not in VariousLists.uniqueMonstersList()]) #Random and not unique
-            else:
-                new_mon=random.choice(large_id_list) #Random and unique
-            if new_mon in VariousLists.uniqueMonstersList():
-                alreadyHasUnique = True
-            QuestEditor.find_and_replace_monster_individual(quest_path, mid, new_mon, False)
-            count += 1
-    
-    return count
-
-
-def packQuestArc(output_arc_name="quest01.arc"):
-    """
-    Packs the quest files into an ARC file using customArcRepacker.py.
-    This function should be called after all randomization is complete.
-    
-    Args:
-        output_arc_name: Name of the output ARC file (default: "quest01.arc")
-    """
-    import subprocess
-    import os
-    
-    try:
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Build paths
-        repacker_path = os.path.join(script_dir, "customArcRepacker.py")
-        output_arc_path = os.path.join(script_dir, output_arc_name)
-        loc_dir = os.path.join(script_dir, "loc")
-        
-        # Build the command
-        cmd = ["python", repacker_path, "c", output_arc_path, loc_dir]
-        
-        # Execute the command
-        print(f"[INFO] Packing quest files into {output_arc_name}...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        # Check if successful
-        if result.returncode == 0:
-            print(f"[SUCCESS] Quest files packed successfully into {output_arc_name}")
-            print(f"Output: {result.stdout}")
-        else:
-            print(f"[ERROR] Failed to pack quest files: {result.stderr}")
+        has_unique = False
+        for original_id in original_monsters:
+            # Select tier based on rank
+            selected_tier = random.choices(all_tiers, weights=tier_chances, k=1)[0]
             
-    except Exception as e:
-        print(f"[ERROR] Exception while packing quest files: {e}")
-#endregion
-
-def randomizeMap(questFilePath: str, newMonstersList: list):
-    """
-    Randomize the map for a quest based on its monster list and wave configuration.
-    
-    This function:
-    1. Identifies unique monsters in the quest
-    2. Selects appropriate maps based on monster types, wave configuration, and settings
-    3. Handles special cases for unique monsters
-    4. Applies the map change to the quest file
-    5. Reorders unique monsters to appear last in quests with 3+ monsters
-    6. Special handling for 2-monster quests with 1 unique monster
-    7. Applies arena restrictions based on wave configuration
-    8. Manages waves properly for multi-monster quests
-    """
-
-    # All monsters in its waves - populate allWaves FIRST
-    parsed_mib = QuestEditor.parse_mib(questFilePath)
-    rawWaves=parsed_mib['large_monster_table']
-    allWaves=[]
-    uniqueMons=[]
-    
-    # Populate allWaves before calling getPossibleMaps
-    for wave in rawWaves:
-        idList=[]
-        for m in wave:
-            idList.append(m['monster_id'])
-            if m['monster_id'] in VariousLists.uniqueMonstersList():
-                uniqueMons.append(m['monster_id'])
-        allWaves.append(idList)
-    
-    # Check if we have multi-monster waves for arena restriction
-    has_multi_monster_wave = any(len(wave) > 1 for wave in allWaves)
-    
-    # Now get possible maps with properly populated allWaves
-    possible_maps = getPossibleMaps(newMonstersList,allWaves,newMonstersList)
-    newMap=random.choice(possible_maps)
-    
-    # Check for unique monsters in first wave that need specific maps
-    # BUT respect arena restrictions if we have multi-monster waves
-    allUniqueMons=VariousLists.uniqueMonstersList()
-    wave0=allWaves[0] if allWaves else []
-    for m in wave0:
-        if m in allUniqueMons or m in VariousLists.akantorAndUkanlos():
-            unique_map = getMapForUniqueMonsterID(m)
-            # Only use the unique map if it doesn't violate arena restrictions
-            if settingNoMoreThanOneInArena and has_multi_monster_wave:
-                arena_maps = VariousLists.getArenaMapsList()
-                if unique_map not in arena_maps:
-                    newMap = unique_map
-                    print(f"[INFO] Using specific map {unique_map} for unique monster {m}")
-                else:
-                    print(f"[INFO] Skipping arena map {unique_map} for unique monster {m} due to multi-monster waves")
+            if settingAllowUniqueMonsters and not has_unique:
+                # Allow unique monsters
+                new_monster = selectRandomMonster(selected_tier)
+                if new_monster in VariousLists.uniqueMonstersList():
+                    has_unique = True
             else:
-                newMap = unique_map
-                print(f"[INFO] Using specific map {unique_map} for unique monster {m}")
-    
-    editMapData(questFilePath,newMonstersList,newMap)
-    if(settingNoMoreThanOneInArena and newMap in VariousLists.getArenaMapsList()):
-        1==1
-#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- #AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
- 
-def adjustStatsForSolo(stats : dict) -> dict:
-    # adjustment: decrease health and attack by 20%
-    adjusted_stats = stats.copy()
-    if 'hp' in adjusted_stats:
-        adjusted_stats['hp'] = int(adjusted_stats['hp'] * 0.05)
-    if 'atk' in adjusted_stats:
-        adjusted_stats['atk'] = int(adjusted_stats['atk'] * 0.05)
-    return adjusted_stats
-
-def progresionRandomizer(full_path: str):
-    parsedMib = QuestEditor.parse_mib(full_path)
-    monstersIDs = getLargeMonstersIDs(parsedMib)
-    if len(monstersIDs) > 0:
-        QuestEditor.clear_all_objectives(full_path)
-
-    rank = parsedMib['quest_rank']
-    tierChances = VariousLists.tierChancesOfRank(rank)
-    allTiers = [8, 7, 6, 5, 4, 3, 2, 1]
-    monCount = 0
-    newMonsters = []
-    for i in monstersIDs:
-        selectedTier = random.choices(allTiers, weights=tierChances, k=1)[0]
-        possibleMons = VariousLists.monsterListFromTier(selectedTier)
-        newMon = random.choice(possibleMons)
+                # No more unique monsters allowed
+                new_monster = selectRandomMonster(selected_tier, exclude_unique=True)
             
-        newMonsters.append(newMon)
-        QuestEditor.push_objective_recent(full_path, newMon, type_val=1, qty=1)
-        QuestEditor.find_and_replace_monster_individual(full_path, i, newMon, False)
+            new_monsters.append(new_monster)
+            
+            # Replace the monster in the quest
+            QuestEditor.find_and_replace_monster_individual(quest_path, original_id, new_monster, False)
+    else:
+        # Simple randomization
+        large_monsters = VariousLists.getLargeList()
+        has_unique = False
+        
+        for original_id in original_monsters:
+            if settingAllowUniqueMonsters and not has_unique:
+                new_monster = random.choice(large_monsters)
+                if new_monster in VariousLists.uniqueMonstersList():
+                    has_unique = True
+            else:
+                # Exclude unique monsters
+                non_unique = [m for m in large_monsters if m not in VariousLists.uniqueMonstersList()]
+                new_monster = random.choice(non_unique)
+            
+            new_monsters.append(new_monster)
+            QuestEditor.find_and_replace_monster_individual(quest_path, original_id, new_monster, False)
+    
+    return new_monsters
 
-        if settingSoloBalance:
-            stats = QuestEditor.read_meta_entry(full_path, monCount)
-            newStats = adjustStatsForSolo(stats)
-            QuestEditor.write_stats_from_dict(full_path, monCount, newStats)
+def selectAppropriateMap(quest_path: str, monsters: list) -> int:
+    """Select an appropriate map based on monsters and settings."""
+    # Check for unique monsters that require specific maps
+    unique_monsters = [m for m in monsters if m in VariousLists.uniqueMonstersList()]
+    
+    # Handle Dalamadur/Shah special cases first
+    if any(isDalamadurHead(mid) for mid in monsters):
+        # Check if head is in first wave - if so, must use map 8
+        parsed = QuestEditor.parse_mib(quest_path)
+        waves = parsed.get('large_monster_table', [])
+        if waves and len(waves[0]) > 0:
+            first_wave_monsters = [m.get('monster_id', 0) for m in waves[0]]
+            if any(isDalamadurHead(mid) for mid in first_wave_monsters):
+                print(f"[INFO] Dalamadur/Shah head in first wave - forcing map 8")
+                return 8
+        
+        # If not in first wave, use allowed Dalamadur maps
+        # Tail is added after map selection; only head position matters here.
+        # If head is not in the first wave, pick randomly among 8, 9, 10.
+        selected_map = random.choice([8, 9, 10])
+        print(f"[INFO] Selected Dalamadur map (head not in first wave): {selected_map}")
+        return selected_map
+    
+    # Start with all available maps
+    possible_maps = AVAILABLE_MAPS.copy()
+    
+    # Check arena restrictions FIRST - applies to all quests with multiple monsters
+    if settingNoMoreThanOneInArena and len(monsters) > 1:
+        # Only allow arena maps if we have an exact valid head+tail pair
+        is_valid_dalamadur_pair = False
+        if len(monsters) == 2:
+            if (24 in monsters and 83 in monsters) or (110 in monsters and 111 in monsters):
+                is_valid_dalamadur_pair = True
+        
+        if not is_valid_dalamadur_pair:
+            arena_maps = VariousLists.getArenaMapsList()
+            possible_maps = [m for m in possible_maps if m not in arena_maps]
+            print(f"[INFO] Excluded arena maps for multi-monster quest: {arena_maps}")
+    
+    # Check music restrictions
+    if settingAlwaysMusic:
+        all_musical = all(isMusicalMonster(mid) for mid in monsters)
+        if not all_musical:
+            # Exclude non-musical maps
+            no_musical_maps = VariousLists.getNoMusicalMapsList()
+            possible_maps = [m for m in possible_maps if m not in no_musical_maps]
+    
+    # Handle other unique monsters
+    if unique_monsters:
+        required_map = getMapForUniqueMonster(unique_monsters[0])
+        
+        # For multi-monster quests, check if required map violates arena restrictions
+        if len(monsters) > 1 and settingNoMoreThanOneInArena:
+            is_valid_dalamadur_pair = False
+            if len(monsters) == 2:
+                if (24 in monsters and 83 in monsters) or (110 in monsters and 111 in monsters):
+                    is_valid_dalamadur_pair = True
+            
+            # If it's not a valid Dalamadur pair and required map is arena, use non-arena alternative
+            if (not is_valid_dalamadur_pair) and required_map in VariousLists.getArenaMapsList():
+                if possible_maps:
+                    selected_map = random.choice(possible_maps)
+                    print(f"[INFO] Overrode unique map {required_map} (arena) with {selected_map} for multi-monster quest")
+                    return selected_map
+        
+        return required_map
+    
+    return random.choice(possible_maps) if possible_maps else random.choice(AVAILABLE_MAPS)
 
-        monCount += 1
-    monCount = 0
-    fixQuestMonsters(full_path)
-
-
-
-def findNonUniqueMonsterInWavesAndNotInFirstWave(allWaves: list) -> list:
-    """
-    Search for the LAST non-unique monster that is NOT in the first wave (wave 0).
-
-    Parameters:
-      allWaves (list): list of waves, each wave is a list of monster IDs (ints).
-                       Example: [[11,12],[21],[31,32]]
-
-    Returns:
-      [monster_id, wave_index, monster_position_in_wave] if found,
-      otherwise [-1, -1, -1].
-    """
-    unique_set = set(VariousLists.uniqueMonstersList())
-
-    # iterate waves from last to first, but skip wave 0
-    for wave_index in range(len(allWaves) - 1, 0, -1):
-        wave = allWaves[wave_index]
-        # iterate positions from last to first to get the "last" monster in that wave
-        for pos in range(len(wave) - 1, -1, -1):
-            monster_id = wave[pos]
-            if monster_id not in unique_set:
-                return [monster_id, wave_index, pos]
-
-    return [-1, -1, -1]
-
-
-def fixExtremeCase1Unique1NormalInWave0(questFilePath: str, uniqueMonsterId: int):
-    """
-    Fix the extreme case where wave0 has [unique, normal] and total monsters == 2.
-    Procedure:
-      - create an empty wave (reparse to get its real index)
-      - find the source (table, pos) of the unique
-      - swap unique -> new_table_index pos 0
-      - delete the placeholder that remained at the source position
-    """
-    # create new empty wave and reparse to get its index
-    created = QuestEditor.createEmptyWave(questFilePath)
-    if not created:
-        print("[ERROR] createEmptyWave failed in fixExtremeCase1Unique1NormalInWave0")
-        return False
-
-    parsed = QuestEditor.parse_mib(questFilePath)
-    tables = parsed.get('large_monster_table', [])
-    new_table_index = len(tables) - 1
-    if new_table_index < 0:
-        print("[ERROR] no tables after createEmptyWave")
-        return False
-
-    # find the current instance (table, pos) of the unique monster BEFORE the swap
-    src_table = -1
-    src_pos = -1
-    for ti, table in enumerate(tables):
-        for mi, m in enumerate(table):
-            if m.get('monster_id') == uniqueMonsterId:
-                src_table = ti
-                src_pos = mi
+def applyMapToQuest(quest_path: str, map_id: int, monsters: list):
+    """Apply the selected map to the quest with proper area/coordinate assignment."""
+    # Set the map ID
+    QuestEditor.set_map_id_dynamic(quest_path, map_id)
+    
+    # Get valid areas for this map
+    area_list = VariousLists.subMapsOf(map_id)
+    if not area_list:
+        print(f"[WARN] No areas available for map {map_id}")
+        return
+    
+    # Apply areas and coordinates to monsters
+    parsed = QuestEditor.parse_mib(quest_path)
+    monster_count = 0
+    
+    for table_idx, table in enumerate(parsed.get('large_monster_table', [])):
+        for monster_idx, monster in enumerate(table):
+            if monster_count >= len(monsters):
                 break
-        if src_table != -1:
+                
+            # Select random area and coordinates
+            area = random.choice(area_list)
+            coords = VariousLists.getListOfCoords(map_id, area)
+            
+            if coords and len(coords) >= 2:
+                try:
+                    QuestEditor.setArea_large(quest_path, table_idx, monster_idx, area)
+                    QuestEditor.set_large_monster_position_by_indices(
+                        quest_path, table_idx, monster_idx, coords[0], coords[1]
+                    )
+                    QuestEditor.set_large_monster_rotation_by_indices(quest_path, table_idx, monster_idx, 0,None,None)
+                except Exception as e:
+                    print(f"[WARN] Failed to set area/coords for monster {monster_count}: {e}")
+            
+            monster_count += 1
+    
+    # Special handling for Gogmazios
+    if 89 in monsters and map_id == 19:
+        try:
+            for table_idx, table in enumerate(parsed.get('large_monster_table', [])):
+                for monster_idx, monster in enumerate(table):
+                    if monster.get('monster_id') == 89:
+                        QuestEditor.setArea_large(quest_path, table_idx, monster_idx, 3)
+                        print(f"[INFO] Placed Gogmazios in area 3")
+                        break
+        except Exception as e:
+            print(f"[WARN] Failed to place Gogmazios: {e}")
+    
+    print(f"[INFO] Applied map {map_id} to quest with {len(monsters)} monsters")
+
+def ensureDalamadurPairing(quest_path: str):
+    """Ensure Dalamadur/Shah heads have their tails in the same wave."""
+    try:
+        parsed = QuestEditor.parse_mib(quest_path)
+        waves = parsed.get('large_monster_table', [])
+
+        # First, enforce that any Dalamadur/Shah head resides in the LAST non-empty wave
+        last_nonempty_idx = -1
+        for i in range(len(waves) - 1, -1, -1):
+            if len(waves[i]) > 0:
+                last_nonempty_idx = i
+                break
+        if last_nonempty_idx != -1:
+            for wi, wave in enumerate(waves):
+                if wi == last_nonempty_idx:
+                    continue
+                for m in wave:
+                    mid = m.get('monster_id', 0)
+                    if isDalamadurHead(mid):
+                        try:
+                            print(f"[INFO] Moving Dalamadur/Shah head {mid} to last wave {last_nonempty_idx}")
+                            QuestEditor.swap_large_monster(quest_path, mid, last_nonempty_idx, 0)
+                            print(f"[SUCCESS] Head {mid} relocated to last wave {last_nonempty_idx}")
+                        except Exception as e:
+                            print(f"[WARN] Failed to move head {mid} to last wave: {e}")
+                        break  # only process one head per wave
+
+        for wave_idx, wave in enumerate(waves):
+            monster_ids = [m.get('monster_id', 0) for m in wave]
+            
+            # Check for heads without tails
+            for monster_id in monster_ids:
+                if isDalamadurHead(monster_id):
+                    tail_id = getDalamadurTail(monster_id)
+                    
+                    if tail_id not in monster_ids:
+                        print(f"[INFO] Found Dalamadur head {monster_id} without tail {tail_id} in wave {wave_idx}")
+                        
+                        # First, try to find and move the tail from another wave
+                        tail_moved = False
+                        for other_wave_idx, other_wave in enumerate(waves):
+                            if other_wave_idx == wave_idx:
+                                continue
+                            
+                            other_ids = [m.get('monster_id', 0) for m in other_wave]
+                            if tail_id in other_ids:
+                                # Move tail to head's wave
+                                try:
+                                    if len(wave) < 2:  # Only if there's space
+                                        QuestEditor.swap_large_monster(quest_path, tail_id, wave_idx, len(wave))
+                                        print(f"[INFO] Moved tail {tail_id} to pair with head {monster_id}")
+                                        tail_moved = True
+                                        break
+                                    else:
+                                        # Preserve the head: replace the other slot with the tail
+                                        head_pos = next((idx for idx, mid in enumerate(monster_ids) if isDalamadurHead(mid)), 0)
+                                        replace_pos = 1 if head_pos == 0 else 0
+                                        QuestEditor.swap_large_monster(quest_path, tail_id, wave_idx, replace_pos)
+                                        print(f"[INFO] Replaced monster in wave {wave_idx} pos {replace_pos} with tail {tail_id}")
+                                        tail_moved = True
+                                        break
+                                except Exception as e:
+                                    print(f"[WARN] Failed to move tail {tail_id}: {e}")
+                        
+                        # If tail wasn't found or couldn't be moved, add it to the wave
+                        if not tail_moved:
+                            try:
+                                if len(wave) < 2:
+                                    QuestEditor.expand_large_monster_table(quest_path, wave_idx, tail_id)
+                                    print(f"[INFO] Added tail {tail_id} to pair with head {monster_id}")
+                                else:
+                                    # Preserve the head: replace the other slot with the tail
+                                    head_pos = next((idx for idx, mid in enumerate(monster_ids) if isDalamadurHead(mid)), 0)
+                                    replace_pos = 1 if head_pos == 0 else 0
+                                    mon_copy = dict(wave[replace_pos])
+                                    mon_copy['monster_id'] = tail_id
+                                    QuestEditor.write_monster_in_large_table(quest_path, wave_idx, replace_pos, mon_copy)
+                                    print(f"[INFO] Replaced wave {wave_idx} pos {replace_pos} with tail {tail_id}")
+                            except Exception as e:
+                                print(f"[WARN] Failed to add tail {tail_id}: {e}")
+                                
+    except Exception as e:
+        print(f"[WARN] Dalamadur pairing failed: {e}")
+
+def moveUniqueToLastWave(quest_path: str):
+    """Move unique monsters to the last non-empty wave."""
+    parsed = QuestEditor.parse_mib(quest_path)
+    waves = parsed.get('large_monster_table', [])
+    unique_monsters = set(VariousLists.uniqueMonstersList())
+
+    # Helper to find the last empty wave (treat single placeholder ID:1 as empty)
+    def _find_last_empty_wave(p):
+        wvs = p.get('large_monster_table', [])
+        for i in range(len(wvs) - 1, -1, -1):
+            if len(wvs[i]) == 0:
+                return i
+            if len(wvs[i]) == 1 and wvs[i][0].get('monster_id') == 1:
+                return i
+        return -1
+
+    # Find last non-empty wave (for reference)
+    last_wave_idx = -1
+    for idx in range(len(waves) - 1, -1, -1):
+        if len(waves[idx]) > 0:
+            last_wave_idx = idx
             break
+        
+    if last_wave_idx == -1:
+        return  # No waves with monsters
+        
+    # Count total monsters to determine if this is a single-monster quest
+    total_monsters = sum(len(wave) for wave in waves)
+        
+    # Find unique monsters not in the last wave
+    unique_to_move = []
+    for wave_idx, wave in enumerate(waves):
+        if wave_idx == last_wave_idx:
+            continue
+        for monster in wave:
+            monster_id = monster.get('monster_id', 0)
+            if monster_id in unique_monsters:
+                unique_to_move.append((monster_id, wave_idx))
+        
+    # Only move unique monsters if there are multiple monsters total
+    # Single-monster quests are exempt from this rule
+    if total_monsters > 1:
+        for monster_id, source_wave_idx in unique_to_move:
+            # Always swap into position 0 of the last wave to avoid invalid index errors
+            p_last = QuestEditor.parse_mib(quest_path)
+            last_wave_now = p_last.get('large_monster_table', [])[last_wave_idx]
+            target_pos = 0
 
-    if src_table == -1:
-        print(f"[ERROR] unique monster {uniqueMonsterId} not found after createEmptyWave")
-        return False
+            if isDalamadurHead(monster_id):
+                # If tail exists in the same source wave, try swapping it into last wave position 0 first
+                p_src = QuestEditor.parse_mib(quest_path)
+                src_wave = p_src.get('large_monster_table', [])[source_wave_idx]
+                src_ids = [m.get('monster_id', 0) for m in src_wave]
+                tail_id = getDalamadurTail(monster_id)
+                if tail_id in src_ids:
+                    QuestEditor.swap_large_monster(quest_path, tail_id, last_wave_idx, 0)
+                # Move head into the last wave via swap (position 0)
+                QuestEditor.swap_large_monster(quest_path, monster_id, last_wave_idx, 0)
+            else:
+                # Regular unique: swap into the last non-empty wave at position 0
+                QuestEditor.swap_large_monster(quest_path, monster_id, last_wave_idx, target_pos)
+    # For single-monster quests, unique placement does not apply
 
-    # move unique to the new table (swap by monster id is safe: unique is unique)
-    success = QuestEditor.swap_large_monster(questFilePath, uniqueMonsterId, new_table_index, 0)
-    if not success:
-        print(f"[ERROR] swap_large_monster failed for unique {uniqueMonsterId} -> table {new_table_index}")
-        return False
+"""
+Assumptions:
+- QuestEditor and VariousLists are available in scope
+- Helper functions isDalamadurHead, getDalamadurTail, getLargeMonstersIDs exist
+- Dalamadur/Shah id pairs are kept as constants below; update if your project uses different ids
+"""
 
-    # delete the placeholder that now sits at the original source (it was swapped there)
-    ok_del = QuestEditor.delete_from_large_table(questFilePath, {'table_index': src_table, 'monster_index': src_pos})
-    if not ok_del:
-        print("[ERROR] delete_from_large_table failed in extreme fix; file may be inconsistent")
-        return False
+def isolateMonstersWhenUniquePresent(quest_path: str):
+    parsedMib=QuestEditor.parse_mib(quest_path)
+    rawWaves=parsedMib.get('large_monster_table', [])
+    allmons=[]
+    allWaves= []
+    for w in rawWaves:
+        wave=[]
+        for n in w:
+            wave.append(n.get('monster_id', 0))
+            allmons.append(n.get('monster_id', 0))
+        allWaves.append(wave)
+    if 24 in allmons or 110 in allmons or 46 in allmons:
+        currentWave=0
+        for w in allWaves:
+            if(len(w)==2 and w[0]!=24 and w[0]!=110 and w[1]!=24 and w[1]!=110):
+                QuestEditor.insertEmptyWave(quest_path, currentWave+1)
+                QuestEditor.move_monster_to_empty_table(quest_path,w[1],currentWave+1)
+                QuestEditor.delete_from_large_table(quest_path,{'table_index':currentWave,'monster_index':1})
+                allWaves.insert(currentWave+1,[w[1]])
+                allWaves[currentWave].remove(w[1])
+            currentWave+=1
 
-    return True
 
 
+def updateQuestObjectives(quest_path: str):
+    """Update quest objectives to match all large monsters currently present in the quest.
 
-def validateArenaAndMusicSettings(full_path: str):
-    """
-    Validates and fixes arena and music settings after map assignment.
-    - If settingNoMoreThanOneInArena is active and quest is in arena map with multi-monster waves, fix it
-    - If settingAlwaysMusic is active and quest is in non-musical arena without musical monsters, add one
+    Builds a flat list of monster IDs from the quest's large_monster_table and writes
+    objectives accordingly:
+      - If up to 3 monsters: each gets its own objective (type 1, qty 1).
+      - If more than 3 monsters: write a single objective type 8 (hunt all).
     """
     try:
-        parsed = QuestEditor.parse_mib(full_path)
-        quest_map_id = QuestEditor.get_map_id(full_path)
-        rawWaves = parsed.get('large_monster_table', [])
-        
-        arena_maps = VariousLists.getArenaMapsList()
-        no_musical_maps = VariousLists.getNoMusicalMapsList()
-        musical_monsters = VariousLists.getMusicalMonstersList()
-        
-        is_arena_map = quest_map_id in arena_maps
-        is_no_musical_map = quest_map_id in no_musical_maps
-        
-        # Check arena restriction
-        if settingNoMoreThanOneInArena and is_arena_map:
-            # Find waves with multiple monsters
-            for wave_idx, wave in enumerate(rawWaves):
-                if len(wave) > 1:
-                    print(f"[INFO] Arena map {quest_map_id} has multi-monster wave {wave_idx}, fixing...")
-                    # Move all but first monster to later waves or create new waves
-                    monsters_to_move = wave[1:]  # All except first
-                    
-                    # Remove extra monsters from current wave
-                    for i in range(len(monsters_to_move) - 1, -1, -1):
-                        QuestEditor.delete_from_large_table(full_path, {'table_index': wave_idx, 'monster_index': i + 1})
-                    
-                    # Add them to later waves or create new waves
-                    for monster in monsters_to_move:
-                        # Try to find an empty wave first
-                        empty_wave_idx = -1
-                        for w_idx, w in enumerate(rawWaves):
-                            if w_idx > wave_idx and len(w) == 0:
-                                empty_wave_idx = w_idx
-                                break
-                        
-                        if empty_wave_idx != -1:
-                            # Add to empty wave
-                            QuestEditor.add_monster_to_wave(full_path, empty_wave_idx, monster['monster_id'])
-                        else:
-                            # Create new wave
-                            QuestEditor.createEmptyWave(full_path)
-                            # Reparse to get updated structure
-                            parsed = QuestEditor.parse_mib(full_path)
-                            new_wave_idx = len(parsed.get('large_monster_table', [])) - 1
-                            QuestEditor.add_monster_to_wave(full_path, new_wave_idx, monster['monster_id'])
-                    
-                    # Reparse after changes
-                    parsed = QuestEditor.parse_mib(full_path)
-                    rawWaves = parsed.get('large_monster_table', [])
-        
-        # Check music requirement
-        if settingAlwaysMusic and is_no_musical_map:
-            # Check if any monster in the quest is musical
-            has_musical_monster = False
-            for wave in rawWaves:
-                for monster in wave:
-                    if monster.get('monster_id') in musical_monsters:
-                        has_musical_monster = True
-                        break
-                if has_musical_monster:
-                    break
-            
-            if not has_musical_monster:
-                print(f"[INFO] Non-musical arena map {quest_map_id} needs a musical monster, adding one...")
-                # Replace the first non-unique monster with a musical one
-                for wave_idx, wave in enumerate(rawWaves):
-                    for monster_idx, monster in enumerate(wave):
-                        monster_id = monster.get('monster_id')
-                        if monster_id not in VariousLists.uniqueMonstersList():
-                            # Replace with a random musical monster
-                            musical_replacement = random.choice(musical_monsters)
-                            QuestEditor.find_and_replace_monster_individual(full_path, monster_id, musical_replacement, False)
-                            print(f"[INFO] Replaced monster {monster_id} with musical monster {musical_replacement}")
-                            return
-                            
+        parsed = QuestEditor.parse_mib(quest_path)
+        waves = parsed.get('large_monster_table', []) if parsed else []
+
+        # Flatten all monster IDs present in the quest
+        monster_ids = []
+        for wave in waves:
+            for m in wave:
+                mid = m.get('monster_id', 0)
+                if mid:
+                    monster_ids.append(mid)
+
+        # Write objectives based on current monsters
+        QuestEditor.write_objectives_for_monsters(quest_path, monster_ids, prefer_type_for_single=1)
     except Exception as e:
-        print(f"[ERROR] Failed to validate arena/music settings: {e}")
+        print(f"[WARN] Failed to update objectives: {e}")
 
-def fixQuestMonsters(full_path: str):
-    """
-    Fixes quest monsters to ensure proper unique monster placement and Akantor/Ukanlos handling.
-    - Only one unique per quest (reroll until satisfied)
-    - If a single unique exists and it's in wave0, move it to a non-first wave (prefer last or empty wave)
-    - Handle Akantor/Ukanlos special placement rules
-    """
-    # parse and build helper lists
-    parsed = QuestEditor.parse_mib(full_path)
-    rawWaves = parsed.get('large_monster_table', [])
-    quest_map_id = QuestEditor.get_map_id(full_path)
-    akantor_ukanlos = VariousLists.akantorAndUkanlos()  # [33, 116]
-    
-    def build_lists_from_raw(raw):
-        aw = []
-        u = []
-        mc = 0
-        for w in raw:
-            ids = []
-            for m in w:
-                ids.append(m['monster_id'])
-                if m['monster_id'] in VariousLists.uniqueMonstersList():
-                    u.append(m['monster_id'])
-                mc += 1
-            aw.append(ids)
-        return aw, u, mc
-
-    allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
-
-    # If more than 1 unique -> reroll until <=1 (safe loop with attempt limit)
-    attempts = 0
-    while len(uniqueMons) > 1 and attempts < 99:
-        randomizeQuest(full_path)  # reroll
-        parsed = QuestEditor.parse_mib(full_path)
-        rawWaves = parsed.get('large_monster_table', [])
-        allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
-        attempts += 1
-    if len(uniqueMons) > 1:
-        print("[WARNING] Could not reduce uniques to 1 after rerolls")
-        # continue anyway
-
-    # reparse state fresh (defensive)
-    parsed = QuestEditor.parse_mib(full_path)
-    rawWaves = parsed.get('large_monster_table', [])
-    allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
-
-    # handle single-unique cases
-    if len(uniqueMons) == 1:
-        uniqueMonsterId = uniqueMons[0]
-
-        # if only 2 monsters total and both in wave0 -> extreme case
-        if mcount == 2 and len(allWaves) >= 1 and len(allWaves[0]) == 2:
-            fixExtremeCase1Unique1NormalInWave0(full_path, uniqueMonsterId)
-            # reparse for safety
-            parsed = QuestEditor.parse_mib(full_path)
-            rawWaves = parsed.get('large_monster_table', [])
-            allWaves, uniqueMons, mcount = build_lists_from_raw(rawWaves)
-            return
-
-        # if unique is in wave0 and there are more than two monsters total -> move it out
-        if mcount > 1 and len(allWaves) >= 1 and uniqueMonsterId in allWaves[0]:
-            # find unique position robustly
-            try:
-                uniquePos = allWaves[0].index(uniqueMonsterId)
-            except ValueError:
-                print("[ERROR] unique present in allWaves[0] but index() failed")
-                return
-
-            # helper: find first empty wave index (or -1)
-            def first_empty_wave_index(aw):
-                for idx, w in enumerate(aw):
-                    if len(w) == 0:
-                        return idx
-                return -1
-
-            empty_idx = first_empty_wave_index(allWaves)
-            if empty_idx != -1:
-                # move unique to empty wave
-                success = QuestEditor.move_monster_to_empty_table(full_path, uniqueMonsterId, empty_idx)
-                if success:
-                    # after swap the placeholder is where unique used to be; delete it
-                    ok_del = QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': uniquePos})
-                    if ok_del:
-                        # update local representation
-                        allWaves[empty_idx].append(uniqueMonsterId)
-                        allWaves[0].pop(uniquePos)
-                else:
-                    print(f"[ERROR] swap to empty wave failed for unique {uniqueMonsterId}")
-                return
-            else:
-                # no empty wave: choose replacement slot (the last non-unique outside wave0)
-                replacement = findNonUniqueMonsterInWavesAndNotInFirstWave(allWaves)
-                if replacement != [-1, -1, -1]:
-                    # replacement = [monster_id, wave_idx, pos]
-                    # move unique into that replacement's slot
-                    rep_mid, rep_w, rep_pos = replacement
-                    success = QuestEditor.swap_large_monster(full_path, uniqueMonsterId, rep_w, rep_pos)
-                    if success:
-                        # update local allWaves safely
-                        allWaves[rep_w][rep_pos] = uniqueMonsterId
-                        allWaves[0][uniquePos] = rep_mid
-                    else:
-                        print(f"[ERROR] swap_large_monster failed moving unique {uniqueMonsterId} -> wave {rep_w} pos {rep_pos}")
-                    return
-                else:
-                    # fallback: try create new wave and move unique there
-                    created = QuestEditor.createEmptyWave(full_path)
-                    if not created:
-                        print("[ERROR] createEmptyWave failed as final fallback")
-                        return
-                    parsed = QuestEditor.parse_mib(full_path)
-                    new_idx = len(parsed.get('large_monster_table', [])) - 1
-                    success = QuestEditor.swap_large_monster(full_path, uniqueMonsterId, new_idx, 0)
-                    if success:
-                        # delete placeholder at old spot
-                        ok_del = QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': uniquePos})
-                        if ok_del:
-                            # update local
-                            allWaves.append([uniqueMonsterId])
-                            allWaves[0].pop(uniquePos)
-                    else:
-                        print("[ERROR] final fallback swap failed")
-                        return
-
-    # Handle Akantor/Ukanlos special placement rules
-    # If they are on their specific maps (Akantor: 9, Ukanlos: 20), they can't be in first wave
-    # If they are on other maps, they must be in wave 2+ (randomly placed, not replacing uniques)
-    for wave_idx, wave in enumerate(allWaves):
-        for monster_id in wave:
-            if monster_id in akantor_ukanlos:
-                akantor_map = 9  # Ingle Isle
-                ukanlos_map = 20  # Polar Field
-                
-                # Check if monster is on its specific map
-                is_on_specific_map = (monster_id == 33 and quest_map_id == akantor_map) or \
-                                   (monster_id == 116 and quest_map_id == ukanlos_map)
-                
-                # If on specific map and in first wave, move to later wave
-                if is_on_specific_map and wave_idx == 0:
-                    print(f"[INFO] Moving {VariousLists.getMonsterName(monster_id)} from wave 1 on its specific map")
-                    # Find position in wave
-                    try:
-                        monster_pos = wave.index(monster_id)
-                    except ValueError:
-                        continue
-                    
-                    # Try to find empty wave or create one
-                    empty_wave_idx = -1
-                    for w_idx, w in enumerate(allWaves):
-                        if w_idx > 0 and len(w) == 0:
-                            empty_wave_idx = w_idx
-                            break
-                    
-                    if empty_wave_idx != -1:
-                        # Move to empty wave
-                        success = QuestEditor.swap_large_monster(full_path, monster_id, empty_wave_idx, 0)
-                        if success:
-                            QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
-                            allWaves[empty_wave_idx].append(monster_id)
-                            allWaves[0].pop(monster_pos)
-                    else:
-                        # Create new wave
-                        created = QuestEditor.createEmptyWave(full_path)
-                        if created:
-                            parsed = QuestEditor.parse_mib(full_path)
-                            new_wave_idx = len(parsed.get('large_monster_table', [])) - 1
-                            success = QuestEditor.swap_large_monster(full_path, monster_id, new_wave_idx, 0)
-                            if success:
-                                QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
-                                allWaves.append([monster_id])
-                                allWaves[0].pop(monster_pos)
-                
-                # If not on specific map, ensure it's in wave 2+ (but don't replace uniques)
-                elif not is_on_specific_map and wave_idx == 0:
-                    print(f"[INFO] Moving {VariousLists.getMonsterName(monster_id)} to wave 2+ on non-specific map")
-                    # Similar logic as above but for non-specific maps
-                    try:
-                        monster_pos = wave.index(monster_id)
-                    except ValueError:
-                        continue
-                    
-                    # Find a suitable wave (not first, and not replacing uniques)
-                    target_wave_idx = -1
-                    for w_idx, w in enumerate(allWaves):
-                        if w_idx > 0:
-                            # Check if wave has room or is empty
-                            has_unique = any(m_id in VariousLists.uniqueMonstersList() for m_id in w)
-                            if not has_unique and len(w) == 0:
-                                target_wave_idx = w_idx
-                                break
-                    
-                    if target_wave_idx != -1:
-                        success = QuestEditor.swap_large_monster(full_path, monster_id, target_wave_idx, 0)
-                        if success:
-                            QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
-                            allWaves[target_wave_idx].append(monster_id)
-                            allWaves[0].pop(monster_pos)
-                    else:
-                        # Create new wave for Akantor/Ukanlos
-                        created = QuestEditor.createEmptyWave(full_path)
-                        if created:
-                            parsed = QuestEditor.parse_mib(full_path)
-                            new_wave_idx = len(parsed.get('large_monster_table', [])) - 1
-                            success = QuestEditor.swap_large_monster(full_path, monster_id, new_wave_idx, 0)
-                            if success:
-                                QuestEditor.delete_from_large_table(full_path, {'table_index': 0, 'monster_index': monster_pos})
-                                allWaves.append([monster_id])
-                                allWaves[0].pop(monster_pos)
-
-    # if no unique or handled, done
-    return
-
+def adjustStatsForSolo(quest_path: str, monster_count: int):
+    """Adjust monster stats if solo balance is enabled."""
+    if not settingSoloBalance:
+        return
         
- 
+    try:
+        # Always use the actual current monster count from the quest,
+        # so tails added during pairing are included.
+        parsed = QuestEditor.parse_mib(quest_path)
+        waves = parsed.get('large_monster_table', []) if parsed else []
+        actual_count = sum(len(w) for w in waves)
+        for i in range(actual_count):
+            stats = QuestEditor.read_meta_entry(quest_path, i)
+            if 'hp' in stats:
+                stats['hp'] = int(stats['hp'] * 0.05)  # Reduce HP by 20%
+            if 'atk' in stats:
+                stats['atk'] = int(stats['atk'] * 0.05)  # Reduce attack by 20%
+            QuestEditor.write_stats_from_dict(quest_path, i, stats)
+    except Exception as e:
+        print(f"[WARN] Failed to adjust stats: {e}")
 
+# ============================================================================
+# MAIN RANDOMIZATION FUNCTION
+# ============================================================================
 
 def randomizeQuest(full_path: str):
-    if os.path.isfile(full_path):
-        parsedMib = QuestEditor.parse_mib(full_path)
-        monstersIDs = getLargeMonstersIDs(parsedMib)
-
-        if settingProgresion:
-            progresionRandomizer(full_path)
-        else:
-            randomizeMonstersNoProgression(monstersIDs, full_path)
-
-        fixQuestMonsters(full_path)
-        if settingRandomMap:            
-            randomizeMap(full_path, monstersIDs)
-        
-        # Call the new arena and music validation after map assignment
-        if settingNoMoreThanOneInArena or settingAlwaysMusic:
-            validateArenaAndMusicSettings(full_path)
-        
-        # Always fix quest monsters to ensure unique monsters and Akantor/Ukanlos are in the correct waves
-        fixQuestMonsters(full_path)
-
-        
-
-        
-
-def main():
-    for file in os.listdir(folder):
-        print('\n')
-        print(file)
-        full_path = os.path.join(folder, file)
-        randomizeQuest(full_path)
-    
-def packQuestArc(output_arc_name="quest01.arc"):
     """
-    Packs the quest files into an ARC file using customArcRepacker.py.
-    This function should be called after all randomization is complete.
+    Main quest randomization function - clean and predictable.
     
-    Args:
-        output_arc_name: Name of the output ARC file (default: "quest01.arc")
+    This function:
+    1. Parses the original quest
+    2. Randomizes monsters while preserving count
+    3. Selects appropriate map
+    4. Applies map with proper areas/coordinates
+    5. Ensures Dalamadur/Shah pairing
+    6. Updates objectives
+    7. Adjusts stats if needed
+    
+    Monster counts are NEVER changed - only monster types are randomized.
     """
-    import subprocess
-    import os
+    if not os.path.isfile(full_path):
+        print(f"[ERROR] Quest file not found: {full_path}")
+        return
     
     try:
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # 1. Parse original quest
+        print(f"[INFO] Randomizing quest: {os.path.basename(full_path)}")
+        original_parsed = QuestEditor.parse_mib(full_path)
+        original_monsters = getLargeMonstersIDs(original_parsed)
+        original_count = len(original_monsters)
         
-        # Build paths
-        repacker_path = os.path.join(script_dir, "customArcRepacker.py")
-        output_arc_path = os.path.join(script_dir, output_arc_name)
-        loc_dir = os.path.join(script_dir, "loc")
+        # Skip quests with no monsters
+        if original_count == 0:
+            print("[INFO] Skipping quest with no large monsters")
+            return
         
-        # Build the command
-        cmd = ["python", repacker_path, "c", output_arc_path, loc_dir]
+        print(f"[INFO] Original monsters: {original_count}")
         
-        # Execute the command
-        print(f"[INFO] Packing quest files into {output_arc_name}...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # 2. Randomize monsters (preserves count)
+        new_monsters = randomizeMonsters(full_path, original_monsters)
+        print(f"[INFO] New monsters: {new_monsters}")
         
-        # Check if successful
-        if result.returncode == 0:
-            print(f"[SUCCESS] Quest files packed successfully into {output_arc_name}")
-            print(f"Output: {result.stdout}")
-        else:
-            print(f"[ERROR] Failed to pack quest files: {result.stderr}")
+        # 3. Select appropriate map
+        if settingRandomMap:
+            selected_map = selectAppropriateMap(full_path, new_monsters)
+            print(f"[INFO] Selected map: {selected_map}")
             
-    except Exception as e:
-        print(f"[ERROR] Exception while packing quest files: {e}")
+        # 4. Apply map with areas/coordinates
+        applyMapToQuest(full_path, selected_map, new_monsters)
+        
+        # 5. Move unique monsters to last wave first (before pairing)
+        moveUniqueToLastWave(full_path)
 
+        # 5.5 Separate non-unique monsters into their own waves if arena rule applies
+        if settingNoMoreThanOneInArena and selected_map in VariousLists.getArenaMapsList():
+            isolateMonstersWhenUniquePresent(full_path)
+        
+        # 6. Ensure Dalamadur/Shah pairing
+        ensureDalamadurPairing(full_path)
+        
+        # 7. Update objectives
+        updateQuestObjectives(full_path)
+        
+        # 8. Adjust stats if needed
+        parsed_for_stats = QuestEditor.parse_mib(full_path)
+        count_for_stats = sum(len(w) for w in (parsed_for_stats.get('large_monster_table', []) if parsed_for_stats else []))
+        adjustStatsForSolo(full_path, count_for_stats)
+        
+        # 9. Verify final count
+        final_parsed = QuestEditor.parse_mib(full_path)
+        final_monsters = getLargeMonstersIDs(final_parsed)
+        final_count = len(final_monsters)
+        
+        if final_count != original_count:
+            # Only allow +1 for valid Dalamadur head+tail pairing
+            if final_count == original_count + 1:
+                # Check if we have a valid head+tail pair
+                waves = final_parsed.get('large_monster_table', [])
+                valid_pairing = False
+                for wave in waves:
+                    ids = [m.get('monster_id', 0) for m in wave]
+                    if (24 in ids and 83 in ids) or (110 in ids and 111 in ids):
+                        valid_pairing = True
+                        break
+                
+                if valid_pairing:
+                    print(f"[INFO] Final monster count increased by 1 due to Dalamadur/Shah pairing")
+                else:
+                    print(f"[WARN] Final monster count {final_count} differs from original {original_count}")
+            else:
+                print(f"[WARN] Final monster count {final_count} differs from original {original_count}")
+        
+        print(f"[SUCCESS] Quest randomized: {os.path.basename(full_path)}")
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to randomize quest: {e}")
+
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """Process all quest files in the quest folder."""
+    folder = getQuestFolder()
+    for file in os.listdir(folder):
+        if file.endswith('.1BBFD18E'):
+            print('\n' + '='*50)
+            full_path = os.path.join(folder, file)
+            randomizeQuest(full_path)
 
 if __name__ == "__main__":
-    folder=getQuestFolder()
+    folder = getQuestFolder()
     resetQuestFiles()
-    sed= input("Enter a seed"'\n')
-    setSeed(sed)
+    seed = input("Enter a seed: ")
+    setSeed(seed)
     main()
-    # Pack the quest files into an ARC file after randomization
     packQuestArc()

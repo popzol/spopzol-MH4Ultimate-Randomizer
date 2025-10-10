@@ -1,5 +1,10 @@
 # diagnostic_dump_quiet_failures.py
-import pytest
+#THIS DOES NOT USE PYTEST
+#THIS DOES NOT USE PYTEST
+#THIS DOES NOT USE PYTEST
+#THIS DOES NOT USE PYTEST
+#THIS DOES NOT USE PYTEST
+#THIS DOES NOT USE PYTEST
 import random
 import Randomizer
 import VariousLists
@@ -19,6 +24,7 @@ import contextlib
 # Keep original stdout/stderr so we can restore and write directly to them.
 _original_stdout = sys.stdout
 _original_stderr = sys.stderr
+ntest = 250
 
 # Helper functions to enable/disable global printing
 def _disable_print():
@@ -26,24 +32,16 @@ def _disable_print():
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
 
-
 def _enable_print():
     """Restore stdout/stderr to the originals so prints show up again."""
     sys.stdout = _original_stdout
     sys.stderr = _original_stderr
 
-
 def _flush_buffer(buf):
-    """Print buffered lines directly to the original stdout.
-
-    This function writes directly to the saved original stdout so it's
-    guaranteed to appear even if the global stdout is currently redirected.
-    It joins lines with newline separators to ensure proper formatting.
-    """
+    """Print buffered lines directly to the original stdout."""
     if not buf:
         return
-    # Join with explicit newline to guarantee correct line breaks and spacing
-    text = "".join(buf) + ""
+    text = "".join(buf)
     try:
         _original_stdout.write(text)
         _original_stdout.flush()
@@ -51,23 +49,22 @@ def _flush_buffer(buf):
         # Fallback: write lines individually
         for line in buf:
             try:
-                _original_stdout.write(line + "")
+                _original_stdout.write(line)
             except Exception:
                 pass
 
 def test_mainTests():
-
     """
-    Comprehensive test function that randomizes quest files and validates
-    unique monster placement, arena restrictions, and reports errors.
+    Comprehensive test function that randomizes quest files and validates:
+      - unique monster placement (must be in last non-empty wave, with Akantor/Ukanlos exceptions)
+      - arena multi-monster restrictions
+      - multiple Dah'ren Mohran detection
 
     Behavior:
       - Fully silent unless a quest fails. On failure the quest buffer is printed
         immediately and silence resumes.
       - Final summary is always printed at the end and printing remains enabled.
-      - All stdout/stderr produced by the called functions is captured per-quest
-        and printed if that quest fails (so you can see internal diagnostic prints).
-      - "No monsters found after randomization" is treated as a special case, not an error.
+      - "No monsters found after randomization" is a special case (not a failure).
     """
     # Start fully silent
     _disable_print()
@@ -75,15 +72,15 @@ def test_mainTests():
     # Reset quest files to original state
     Randomizer.resetQuestFiles()
 
-    # Set a test seed for reproducible results
+    # Set a test seed for reproducible-ish results
     seed = random.randint(0, 1000000)
     Randomizer.setSeed(seed)
 
     # Get quest folder
     quest_folder = Randomizer.getQuestFolder()
 
-    # Process up to 120 quest files for testing
-    quest_files = [f for f in os.listdir(quest_folder) if f.endswith('.1BBFD18E')][:120]
+    # Process up to ntest quest files for testing
+    quest_files = [f for f in os.listdir(quest_folder) if f.endswith('.1BBFD18E')][:ntest]
 
     # Statistics tracking
     total_quests = len(quest_files)
@@ -93,12 +90,16 @@ def test_mainTests():
     special_cases = 0
     failedCases = []
 
+    # Precompute special unique mapping for Akantor/Ukanlos
+    akantor_ukanlos_list = VariousLists.akantorAndUkanlos() if hasattr(VariousLists, 'akantorAndUkanlos') else [33, 116]
+    special_map_for = {33: 9, 116: 20}
+
     for quest_idx, quest_file in enumerate(quest_files, 1):
         # Buffer for this quest's messages — only printed if this quest fails.
         buf = []
-        buf.append('=' * 80)
-        buf.append(f'[TESTING] Quest {quest_idx}/{total_quests}: {quest_file}')
-        buf.append('=' * 80)
+        buf.append('=' * 80 + '\n')
+        buf.append(f'[TESTING] Quest {quest_idx}/{total_quests}: {quest_file}\n')
+        buf.append('=' * 80 + '\n')
 
         full_path = os.path.join(quest_folder, quest_file)
         quest_passed = True
@@ -119,19 +120,23 @@ def test_mainTests():
 
                 print('[INTERNAL] Completed parse of original quest (captured)')
 
-                buf.append('[ORIGINAL] Monsters before randomization:')
+                buf.append('[ORIGINAL] Monsters before randomization:\n')
+                # Count monsters before randomization
+                orig_waves = original_parsed.get('large_monster_table', [])
+                total_original_monsters = sum(len(w) for w in orig_waves)
                 if original_monsters:
                     for wave_idx, wave in enumerate(original_parsed.get('large_monster_table', [])):
                         if wave:
-                            buf.append(f'  Wave {wave_idx + 1}:')
+                            buf.append(f'  Wave {wave_idx + 1}:\n')
                             for pos_idx, monster in enumerate(wave):
                                 monster_id = monster.get('monster_id', 0)
                                 monster_name = VariousLists.getMonsterName(monster_id)
-                                buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id})')
+                                buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id})\n')
                         else:
-                            buf.append(f'  Wave {wave_idx + 1}: Empty')
+                            buf.append(f'  Wave {wave_idx + 1}: Empty\n')
                 else:
-                    buf.append('  No large monsters found')
+                    buf.append('  No large monsters found\n')
+                buf.append(f'[COUNT] Monsters before: {total_original_monsters}\n')
 
                 # Randomize the quest
                 Randomizer.randomizeQuest(full_path)
@@ -142,60 +147,223 @@ def test_mainTests():
                 randomized_monsters = Randomizer.getLargeMonstersIDs(randomized_parsed)
                 print('[INTERNAL] Completed parse of randomized quest (captured)')
 
-                buf.append('[RANDOMIZED] Monsters after randomization (Wave Format):')
+                buf.append('[RANDOMIZED] Monsters after randomization (Wave Format):\n')
                 if randomized_monsters:
                     unique_monsters_list = VariousLists.uniqueMonstersList()
                     arena_maps = VariousLists.getArenaMapsList()
+                    # Dalamadur/Shah head to tail mapping
+                    dalamadur_heads = {24: 83, 110: 111}
 
                     try:
                         quest_map_id = QuestEditor.get_map_id(full_path)
                         is_arena_map = quest_map_id in arena_maps
-                        buf.append(f'[MAP] Quest map ID: {quest_map_id} {"(ARENA)" if is_arena_map else ""}')
+                        buf.append(f'[MAP] Quest map ID: {quest_map_id} {"(ARENA)" if is_arena_map else ""}\n')
                     except Exception as e:
-                        buf.append(f'[ERROR] Could not get map ID: {e}')
+                        buf.append(f'[ERROR] Could not get map ID: {e}\n')
                         quest_map_id = None
                         is_arena_map = False
 
-                    # Check each wave
-                    for wave_idx, wave in enumerate(randomized_parsed.get('large_monster_table', [])):
-                        if wave:
-                            buf.append(f'  Wave {wave_idx + 1}: {len(wave)} monster(s)')
+                    # Count total monsters and find last non-empty wave index
+                    waves = randomized_parsed.get('large_monster_table', [])
+                    total_after_monsters = sum(len(w) for w in waves)
+                    last_non_empty_wave_idx = -1
+                    for idx in range(len(waves) - 1, -1, -1):
+                        if len(waves[idx]) > 0:
+                            last_non_empty_wave_idx = idx
+                            break
+                    buf.append(f'[COUNT] Monsters after: {total_after_monsters}\n')
 
-                            # Check for multiple monsters in arena
-                            if is_arena_map and len(wave) > 1 and Randomizer.settingNoMoreThanOneInArena:
-                                error_msg = f'VIOLATION: Wave {wave_idx + 1} has {len(wave)} monsters in arena map {quest_map_id}'
-                                current_errors.append(error_msg)
-                                failedCases.append(error_msg)
-                                buf.append(f'    [ERROR] {error_msg}')
-                                quest_passed = False
+                    # New verification: no wave may contain 3 or more monsters
+                    for wave_idx, wave in enumerate(waves):
+                        if len(wave) >= 3:
+                            error_msg = f'VIOLATION: Wave {wave_idx + 1} has {len(wave)} monsters (max 2 allowed)'
+                            current_errors.append(error_msg)
+                            failedCases.append(error_msg)
+                            buf.append(f'    [ERROR] {error_msg}\n')
+                            quest_passed = False
+
+                    # Validation: counts must match unless Dalamadur/Shah head+tail present in same wave
+                    if total_after_monsters != total_original_monsters:
+                        allowed_exception = False
+                        if total_after_monsters == total_original_monsters + 1:
+                            # Check for head+tail pair in the same wave (normal or Shah)
+                            dalamadur_heads = {24: 83, 110: 111}
+                            for w in waves:
+                                ids_in_wave = {m.get('monster_id', 0) for m in w}
+                                for head_id, tail_id in dalamadur_heads.items():
+                                    if head_id in ids_in_wave and tail_id in ids_in_wave:
+                                        allowed_exception = True
+                                        break
+                                if allowed_exception:
+                                    break
+                        if not allowed_exception:
+                            error_msg = (f"VIOLATION: Monster count changed from {total_original_monsters} to "
+                                         f"{total_after_monsters} without valid Dalamadur head+tail exception")
+                            current_errors.append(error_msg)
+                            failedCases.append(error_msg)
+                            buf.append(f'    [ERROR] {error_msg}\n')
+                            quest_passed = False
+
+                    # New validation: no quests may contain more than one distinct unique monster
+                    distinct_unique_ids = set()
+                    for w in waves:
+                        for m in w:
+                            mid = m.get('monster_id', 0)
+                            if mid in unique_monsters_list:
+                                distinct_unique_ids.add(mid)
+                    if len(distinct_unique_ids) > 1:
+                        error_msg = f"VIOLATION: Multiple distinct unique monsters present: {sorted(list(distinct_unique_ids))}"
+                        current_errors.append(error_msg)
+                        failedCases.append(error_msg)
+                        buf.append(f'    [ERROR] {error_msg}\n')
+                        quest_passed = False
+
+                    # Check each wave
+                    for wave_idx, wave in enumerate(waves):
+                        if wave:
+                            buf.append(f'  Wave {wave_idx + 1}: {len(wave)} monster(s)\n')
+
+                            # Arena rule: only single-monster waves are allowed, except a head+tail pair in the same wave
+                            if is_arena_map and Randomizer.settingNoMoreThanOneInArena:
+                                ids_in_wave = [m.get('monster_id', 0) for m in wave]
+                                allowed_pair = False
+                                # Head+tail allowed as the only 2 monsters in the wave
+                                if len(wave) == 2:
+                                    for head_id, tail_id in dalamadur_heads.items():
+                                        if (head_id in ids_in_wave) and (tail_id in ids_in_wave):
+                                            allowed_pair = True
+                                            break
+                                if not allowed_pair and len(wave) > 1:
+                                    error_msg = f'VIOLATION: Wave {wave_idx + 1} has {len(wave)} monsters in arena map {quest_map_id} (only solo allowed; head+tail pair is exception)'
+                                    current_errors.append(error_msg)
+                                    failedCases.append(error_msg)
+                                    buf.append(f'    [ERROR] {error_msg}\n')
+                                    quest_passed = False
 
                             for pos_idx, monster in enumerate(wave):
                                 monster_id = monster.get('monster_id', 0)
                                 monster_name = VariousLists.getMonsterName(monster_id)
                                 is_unique = monster_id in unique_monsters_list
 
-                                # Check if unique monster is in first wave
-                                if is_unique and wave_idx == 0:
-                                    total_monsters = sum(len(w) for w in randomized_parsed.get('large_monster_table', []))
-                                    if total_monsters > 1:
-                                        error_msg = f'VIOLATION: Unique monster {monster_name} ({monster_id}) in Wave 1'
-                                        current_errors.append(error_msg)
-                                        failedCases.append(error_msg)
-                                        buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}) [UNIQUE] [ERROR: Should not be in Wave 1]')
-                                        quest_passed = False
+                                # Special handling for Akantor/Ukanlos
+                                if monster_id in akantor_ukanlos_list:
+                                    # Allowed anywhere if on their special map; otherwise treat like unique
+                                    special_allowed = (special_map_for.get(monster_id) == quest_map_id)
+                                    if special_allowed:
+                                        buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}) [SPECIAL-ALLOWED]\n')
+                                        continue
                                     else:
-                                        special_msg = f'Single monster quest with unique {monster_name} ({monster_id}) in Wave 1'
-                                        current_special_cases.append(special_msg)
-                                        buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}) [UNIQUE] [SPECIAL: Single monster quest]')
+                                        is_unique = True  # treat as unique for placement rule
+
+                                # New rule: unique monsters (including Dalamadur/Shah head) must be in the last non-empty wave
+                                if is_unique:
+                                    if last_non_empty_wave_idx == -1:
+                                        # weird: no non-empty waves? shouldn't happen if we have monsters
+                                        pass
+                                    elif wave_idx != last_non_empty_wave_idx:
+                                        # If there's only one monster in total, it's allowed anywhere.
+                                        if total_after_monsters > 1:
+                                            error_msg = (f'VIOLATION: Unique monster {monster_name} ({monster_id}) '
+                                                         f'in wave {wave_idx + 1} but last non-empty wave is {last_non_empty_wave_idx + 1}')
+                                            current_errors.append(error_msg)
+                                            failedCases.append(error_msg)
+                                            buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}) [UNIQUE] [ERROR: Should be in last non-empty wave]\n')
+                                            quest_passed = False
+                                        else:
+                                            special_msg = f'Single monster quest with unique {monster_name} ({monster_id})'
+                                            current_special_cases.append(special_msg)
+                                            buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}) [UNIQUE] [SPECIAL: Single monster quest]\n')
+                                    else:
+                                        buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}) [UNIQUE]\n')
                                 else:
-                                    unique_tag = ' [UNIQUE]' if is_unique else ''
-                                    buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id}){unique_tag}')
+                                    buf.append(f'    Position {pos_idx + 1}: {monster_name} ({monster_id})\n')
                         else:
-                            buf.append(f'  Wave {wave_idx + 1}: Empty')
+                            buf.append(f'  Wave {wave_idx + 1}: Empty\n')
+
+                    # Dalamadur/Shah verification
+                    # Dalamadur/Shah verification and map rules
+                    # Heads must have their tails in the same wave and be in the last wave
+                    # If a head appears in the FIRST wave, map must be 8. Otherwise, map must be in allowed maps.
+                    # Also enforce allowed maps for Shah variants via getDalamadurMapsList.
+                    # Note: tail alone should not trigger map restrictions.
+                    # Map checks done here ensure Randomizer logic conforms to requested constraints.
+                    dalamadur_heads = {24: 83, 110: 111}
+                    head_instances = []
+                    for w_idx, w in enumerate(waves):
+                        for m in w:
+                            mid = m.get('monster_id', 0)
+                            if mid in dalamadur_heads:
+                                head_instances.append((mid, w_idx))
+                    if head_instances:
+                        try:
+                            allowed_maps = VariousLists.getDalamadurMapsList()
+                        except Exception:
+                            allowed_maps = [8, 9, 10]
+                        # First-wave head forces map 8
+                        first_wave_head = any(w_idx == 0 for _, w_idx in head_instances)
+                        if first_wave_head and quest_map_id != 8:
+                            error_msg = f'VIOLATION: Dalamadur/Shah head in first wave but map is {quest_map_id} (must be 8)'
+                            current_errors.append(error_msg)
+                            failedCases.append(error_msg)
+                            buf.append(f'    [ERROR] {error_msg}\n')
+                            quest_passed = False
+                        # If no head in first wave, map must be in allowed maps
+                        if not first_wave_head and quest_map_id not in allowed_maps:
+                            error_msg = f'VIOLATION: Dalamadur/Shah on disallowed map {quest_map_id} (allowed: {allowed_maps})'
+                            current_errors.append(error_msg)
+                            failedCases.append(error_msg)
+                            buf.append(f'    [ERROR] {error_msg}\n')
+                            quest_passed = False
+                        for head_id, w_idx in head_instances:
+                            tail_id = dalamadur_heads[head_id]
+                            tail_in_same = any(m.get('monster_id', 0) == tail_id for m in waves[w_idx])
+                            if not tail_in_same:
+                                error_msg = f'VIOLATION: Head {head_id} without tail {tail_id} in same wave'
+                                current_errors.append(error_msg)
+                                failedCases.append(error_msg)
+                                buf.append(f'    [ERROR] {error_msg}\n')
+                                quest_passed = False
+                            if w_idx != last_non_empty_wave_idx:
+                                error_msg = f'VIOLATION: Dalamadur/Shah not in last wave (wave {w_idx + 1} vs {last_non_empty_wave_idx + 1})'
+                                current_errors.append(error_msg)
+                                failedCases.append(error_msg)
+                                buf.append(f'    [ERROR] {error_msg}\n')
+                                quest_passed = False
+
+                    # Validation: every large monster must be listed as an objective
+                    try:
+                        objectives = QuestEditor.get_all_objectives(full_path)
+                        has_hunt_all = any(obj.get('type', 0) == 8 for obj in objectives.values())
+                        objective_targets = set()
+                        for obj in objectives.values():
+                            t = obj.get('type', 0)
+                            if t not in (0, 8):
+                                tid = obj.get('target_id', 0)
+                                if tid:
+                                    objective_targets.add(tid)
+                        quest_monster_ids = [m.get('monster_id', 0) for w in waves for m in w]
+                        # If a head is present, we allow one fewer objective to account for tail not being required.
+                        present_heads = {hid for hid in dalamadur_heads.keys() if hid in quest_monster_ids}
+                        tails_to_ignore = {dalamadur_heads[hid] for hid in present_heads}
+                        required_monsters = [mid for mid in quest_monster_ids if mid not in tails_to_ignore]
+                        if quest_monster_ids:
+                            if not has_hunt_all:
+                                missing = [mid for mid in required_monsters if mid not in objective_targets]
+                                if missing:
+                                    names = ", ".join([f"{VariousLists.getMonsterName(mid)} ({mid})" for mid in missing])
+                                    error_msg = f"VIOLATION: Objectives missing monsters: {names}"
+                                    current_errors.append(error_msg)
+                                    failedCases.append(error_msg)
+                                    buf.append(f'    [ERROR] {error_msg}\n')
+                                    quest_passed = False
+                            else:
+                                buf.append('    [INFO] Objective type 8 (Hunt All) present; coverage assumed complete\n')
+                    except Exception as e:
+                        buf.append(f'    [WARN] Could not validate objectives: {e}\n')
 
                     # Display monsters in a single line format
                     monster_display = ", ".join([f"{VariousLists.getMonsterName(mid)} ({mid})" for mid in randomized_monsters])
-                    buf.append(f'[SUMMARY] Quest monsters: {monster_display}')
+                    buf.append(f'[SUMMARY] Quest monsters: {monster_display}\n')
 
                     # Check for multiple Dah'ren Mohran
                     dahren_count = randomized_monsters.count(46)
@@ -203,7 +371,7 @@ def test_mainTests():
                         error_msg = f"VIOLATION: Multiple Dah'ren Mohran found ({dahren_count} instances)"
                         current_errors.append(error_msg)
                         failedCases.append(error_msg)
-                        buf.append(f'[ERROR] {error_msg}')
+                        buf.append(f'[ERROR] {error_msg}\n')
                         quest_passed = False
                     elif dahren_count == 1:
                         # Record as a special case
@@ -211,32 +379,31 @@ def test_mainTests():
 
                 else:
                     # No monsters found after randomization — NOT considered a failure
-                    buf.append('  No large monsters found after randomization')
+                    buf.append('  No large monsters found after randomization\n')
                     current_special_cases.append('No monsters found after randomization')
                     # quest_passed remains True
-                    pass
 
             # End of captured block
 
             # Retrieve captured stdout/stderr from the functions we invoked
             captured_output = capture_io.getvalue()
             if captured_output:
-                buf.append('[CAPTURED OUTPUT BEGIN]')
+                buf.append('[CAPTURED OUTPUT BEGIN]\n')
                 for line in captured_output.rstrip().splitlines():
-                    buf.append('  ' + line)
-                buf.append('[CAPTURED OUTPUT END]')
+                    buf.append('  ' + line + '\n')
+                buf.append('[CAPTURED OUTPUT END]\n')
 
             # Collect special cases counts
             if current_special_cases:
                 special_cases += len(current_special_cases)
                 for sc in current_special_cases:
-                    buf.append(f'[SPECIAL] {sc}')
+                    buf.append(f'[SPECIAL] {sc}\n')
 
             # Decide whether to flush the buffer for this quest: only if it failed
             if not quest_passed or current_errors:
                 # This quest failed: enable printing, flush this quest buffer, then go silent again
                 _enable_print()
-                buf.append('[RESULT] FAIL Quest validation FAILED')
+                buf.append('[RESULT] FAIL Quest validation FAILED\n')
                 validation_errors += 1
                 _flush_buffer(buf)
                 _disable_print()
@@ -247,13 +414,13 @@ def test_mainTests():
             # Ensure we still have captured output available after an exception
             captured_output = capture_io.getvalue()
             if captured_output:
-                buf.append('[CAPTURED OUTPUT BEGIN]')
+                buf.append('[CAPTURED OUTPUT BEGIN]\n')
                 for line in captured_output.rstrip().splitlines():
-                    buf.append('  ' + line)
-                buf.append('[CAPTURED OUTPUT END]')
+                    buf.append('  ' + line + '\n')
+                buf.append('[CAPTURED OUTPUT END]\n')
 
             # Quest processing raised — enable printing and show details immediately
-            buf.append(f'[ERROR] Failed to process quest {quest_file}: {e}')
+            buf.append(f'[ERROR] Failed to process quest {quest_file}: {e}\n')
             _enable_print()
             _flush_buffer(buf)
             _disable_print()
@@ -284,7 +451,6 @@ def test_mainTests():
 
     # Repack the quest archive (no print here)
     Randomizer.packQuestArc()
-
 
 if __name__ == "__main__":
     test_mainTests()
