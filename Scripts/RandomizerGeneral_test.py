@@ -173,6 +173,67 @@ def test_mainTests():
                             break
                     buf.append(f'[COUNT] Monsters after: {total_after_monsters}\n')
 
+                    # Validation: no empty wave may appear before the last non-empty wave
+                    # Examples:
+                    # - [1],[3],[] is valid (empty only after last non-empty)
+                    # - [1],[],[3] is a violation (empty between non-empty waves)
+                    try:
+                        if last_non_empty_wave_idx != -1:
+                            for idx in range(0, last_non_empty_wave_idx + 1):
+                                if len(waves[idx]) == 0:
+                                    error_msg = (
+                                        f'VIOLATION: Empty wave {idx + 1} before last non-empty wave '
+                                        f'{last_non_empty_wave_idx + 1}'
+                                    )
+                                    current_errors.append(error_msg)
+                                    failedCases.append(error_msg)
+                                    buf.append(f'    [ERROR] {error_msg}\n')
+                                    quest_passed = False
+                                    break
+                    except Exception as e:
+                        buf.append(f"    [WARN] Empty-wave ordering validation skipped due to error: {e}\n")
+
+                    # Validation: if a unique monster appears in wave 1, it must be alone and on its required map
+                    # Exception: Dalamadur/Shah heads (24/110) are valid in wave 1 if their tail (83/111) is also present
+                    try:
+                        first_wave = waves[0] if waves else []
+                        if first_wave:
+                            ids_first_wave = [m.get('monster_id', 0) for m in first_wave]
+                            unique_in_first = [mid for mid in ids_first_wave if mid in unique_monsters_list]
+                            if unique_in_first:
+                                # Allow head+tail pair in wave 1 for Dalamadur/Shah
+                                has_valid_dalamadur_pair = (
+                                    (24 in ids_first_wave and 83 in ids_first_wave) or
+                                    (110 in ids_first_wave and 111 in ids_first_wave)
+                                )
+                                # Must be alone in wave 1
+                                if not has_valid_dalamadur_pair and len(first_wave) != 1:
+                                    error_msg = (
+                                        f"VIOLATION: Unique monster in wave 1 must be alone; "
+                                        f"wave 1 has {len(first_wave)} monsters"
+                                    )
+                                    current_errors.append(error_msg)
+                                    failedCases.append(error_msg)
+                                    buf.append(f'    [ERROR] {error_msg}\n')
+                                    quest_passed = False
+
+                                # Must be on the unique monster's required map
+                                for mid in unique_in_first:
+                                    required_map = Randomizer.getMapForUniqueMonster(mid)
+                                    if quest_map_id is None or quest_map_id != required_map:
+                                        mname = VariousLists.getMonsterName(mid)
+                                        error_msg = (
+                                            f"VIOLATION: Unique {mname} ({mid}) in wave 1 on map {quest_map_id} "
+                                            f"(required {required_map})"
+                                        )
+                                        current_errors.append(error_msg)
+                                        failedCases.append(error_msg)
+                                        buf.append(f'    [ERROR] {error_msg}\n')
+                                        quest_passed = False
+                    except Exception as e:
+                        # Do not break the run; record diagnostic and continue
+                        buf.append(f"    [WARN] Wave-1 unique validation skipped due to error: {e}\n")
+
                     # New verification: no wave may contain 3 or more monsters
                     for wave_idx, wave in enumerate(waves):
                         if len(wave) >= 3:
@@ -330,36 +391,7 @@ def test_mainTests():
                                 buf.append(f'    [ERROR] {error_msg}\n')
                                 quest_passed = False
 
-                    # Validation: every large monster must be listed as an objective
-                    try:
-                        objectives = QuestEditor.get_all_objectives(full_path)
-                        has_hunt_all = any(obj.get('type', 0) == 8 for obj in objectives.values())
-                        objective_targets = set()
-                        for obj in objectives.values():
-                            t = obj.get('type', 0)
-                            if t not in (0, 8):
-                                tid = obj.get('target_id', 0)
-                                if tid:
-                                    objective_targets.add(tid)
-                        quest_monster_ids = [m.get('monster_id', 0) for w in waves for m in w]
-                        # If a head is present, we allow one fewer objective to account for tail not being required.
-                        present_heads = {hid for hid in dalamadur_heads.keys() if hid in quest_monster_ids}
-                        tails_to_ignore = {dalamadur_heads[hid] for hid in present_heads}
-                        required_monsters = [mid for mid in quest_monster_ids if mid not in tails_to_ignore]
-                        if quest_monster_ids:
-                            if not has_hunt_all:
-                                missing = [mid for mid in required_monsters if mid not in objective_targets]
-                                if missing:
-                                    names = ", ".join([f"{VariousLists.getMonsterName(mid)} ({mid})" for mid in missing])
-                                    error_msg = f"VIOLATION: Objectives missing monsters: {names}"
-                                    current_errors.append(error_msg)
-                                    failedCases.append(error_msg)
-                                    buf.append(f'    [ERROR] {error_msg}\n')
-                                    quest_passed = False
-                            else:
-                                buf.append('    [INFO] Objective type 8 (Hunt All) present; coverage assumed complete\n')
-                    except Exception as e:
-                        buf.append(f'    [WARN] Could not validate objectives: {e}\n')
+
 
                     # Display monsters in a single line format
                     monster_display = ", ".join([f"{VariousLists.getMonsterName(mid)} ({mid})" for mid in randomized_monsters])

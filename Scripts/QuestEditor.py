@@ -220,6 +220,8 @@ def get_header_offset_dynamic(questFilePath: str) -> int:
     return header_addr - 0xA0
 
 def set_objective(questFilePath: str, index: int, type_val: int, target_id: int, qty: int):
+    if type_val is None:
+        type_val = 8
     if index not in _OBJECTIVE_BASES:
         raise IndexError("set_objective: index must be 0,1 or 2")
     header_off = get_header_offset_dynamic(questFilePath)
@@ -496,6 +498,61 @@ def move_metadata_entry(questFilePath: str, src_index: int, dst_index: int):
             write_stats_from_dict(questFilePath, i, next_meta)
         # Place src_meta at dst_index
         write_stats_from_dict(questFilePath, dst_index, src_meta)
+
+def compact_metadata_after_large_delete(questFilePath: str, wave_index: int, position_index: int, pre_total: int | None = None, pre_src_idx: int | None = None):
+    """
+    Compact the large monster metadata table after deleting a monster.
+
+    - Shifts all metadata entries left starting from the deleted monster's index.
+    - Zeroes out the final metadata slot so no trace remains.
+
+    Args:
+        questFilePath: Path to the quest file
+        wave_index: Wave index of the deleted monster (0-based)
+        position_index: Position within the wave (0-based)
+        pre_total: Optional total count of metadata entries BEFORE deletion
+        pre_src_idx: Optional metadata index of the deleted monster BEFORE deletion
+    """
+    try:
+        if pre_total is None or pre_src_idx is None:
+            parsed = parse_mib(questFilePath)
+            large_tables = parsed.get('large_monster_table', [])
+            total_meta = sum(len(w) for w in large_tables)
+            src_idx = calculate_metadata_index(questFilePath, wave_index, position_index)
+        else:
+            total_meta = pre_total
+            src_idx = pre_src_idx
+
+        if total_meta <= 0:
+            print(f"[WARN] compact_metadata_after_large_delete: total_meta={total_meta}, nothing to compact")
+            return
+        if src_idx < 0 or src_idx >= total_meta:
+            print(f"[ERROR] compact_metadata_after_large_delete: src_idx {src_idx} out of range (total={total_meta})")
+            return
+
+        # Shift metadata entries left from src_idx to total_meta-2
+        for i in range(src_idx, total_meta - 1):
+            next_meta = read_meta_entry(questFilePath, i + 1)
+            write_stats_from_dict(questFilePath, i, next_meta)
+
+        # Zero out the last entry to remove any trace
+        last_idx = total_meta - 1
+        write_stats_from_dict(
+            questFilePath,
+            last_idx,
+            {
+                'size': 0,
+                'size_var': 0,
+                'hp': 0,
+                'atk': 0,
+                'break_res': 0,
+                'stamina': 0,
+                'status_res': 0,
+            },
+        )
+        print(f"[DEBUG] compact_metadata_after_large_delete: shifted entries from {src_idx}..{total_meta-2} and zeroed index {last_idx}")
+    except Exception as e:
+        print(f"[ERROR] compact_metadata_after_large_delete failed: {e}")
     else:
         # Shift entries right (i <- i-1) from src_index .. dst_index+1
         for i in range(src_index, dst_index, -1):
@@ -1248,6 +1305,17 @@ def delete_from_large_table(path: str, monster_info: dict) -> bool:
             print(f"[ERROR] delete_from_large_table: table pointer 0x{table_addr:X} out of bounds (filesize=0x{size:X})")
             return False
         
+        # Pre-compute metadata indices BEFORE any structural changes
+        try:
+            parsed_for_meta = parse_mib(path)
+            large_tables_for_meta = parsed_for_meta.get('large_monster_table', [])
+            pre_total_meta = sum(len(w) for w in large_tables_for_meta)
+            pre_src_meta_idx = calculate_metadata_index(path, table_index, monster_index)
+        except Exception as e_meta:
+            print(f"[WARN] delete_from_large_table: could not precompute metadata indices: {e_meta}")
+            pre_total_meta = None
+            pre_src_meta_idx = None
+
         # Count total monsters in this table (until terminator)
         total_monsters = 0
         while True:
@@ -1271,9 +1339,22 @@ def delete_from_large_table(path: str, monster_info: dict) -> bool:
             print(f"[ERROR] delete_from_large_table: monster_index {monster_index} out of range (total={total_monsters})")
             return False
 
-        # If this is the only monster, just write terminator
+        # If this is the only monster, just write terminator and scrub the rest of the struct bytes
         if total_monsters == 1:
             write_dword_at(path, table_addr, 0xFFFFFFFF)
+            # Physically clear remaining bytes in the first (now-terminator) slot for a clean deletion
+            try:
+                with open(path, 'r+b') as f:
+                    f.seek(table_addr + 4)
+                    f.write(b"\x00" * (MONSTER_STRUCT_SIZE - 4))
+                print(f"[DEBUG] delete_from_large_table SCRUB: zeroed {MONSTER_STRUCT_SIZE - 4} bytes after terminator at 0x{table_addr + 4:X}")
+            except Exception as e:
+                print(f"[WARN] delete_from_large_table: tail scrub failed at 0x{table_addr + 4:X}: {e}")
+            # Compact metadata to remove any trace of the deleted monster
+            try:
+                compact_metadata_after_large_delete(path, table_index, monster_index, pre_total=pre_total_meta, pre_src_idx=pre_src_meta_idx)
+            except Exception as e_cmp:
+                print(f"[WARN] delete_from_large_table: metadata compaction failed (single) - {e_cmp}")
             print(f"Deleted last monster in table {table_index}")
             print(f"[DEBUG] delete_from_large_table AFTER: total_monsters_in_table=0")
             return True
@@ -1297,13 +1378,27 @@ def delete_from_large_table(path: str, monster_info: dict) -> bool:
                 f.seek(dst_offset)
                 f.write(monster_data)
         
-        # Write terminator at the new end position
+        # Write terminator at the new end position and scrub remaining bytes in that slot
         terminator_offset = table_addr + (total_monsters - 1) * MONSTER_STRUCT_SIZE
         if terminator_offset + 4 > size:
             print(f"[ERROR] delete_from_large_table: terminator write beyond file at 0x{terminator_offset:X}")
             return False
         write_dword_at(path, terminator_offset, 0xFFFFFFFF)
-        
+        # Physically clear remaining bytes in the last (now-terminator) slot to avoid residual data past the terminator
+        try:
+            with open(path, 'r+b') as f:
+                f.seek(terminator_offset + 4)
+                f.write(b"\x00" * (MONSTER_STRUCT_SIZE - 4))
+            print(f"[DEBUG] delete_from_large_table SCRUB: zeroed {MONSTER_STRUCT_SIZE - 4} bytes after terminator at 0x{terminator_offset + 4:X}")
+        except Exception as e:
+            print(f"[WARN] delete_from_large_table: tail scrub failed at 0x{terminator_offset + 4:X}: {e}")
+
+        # Compact metadata to remove any trace of the deleted monster
+        try:
+            compact_metadata_after_large_delete(path, table_index, monster_index, pre_total=pre_total_meta, pre_src_idx=pre_src_meta_idx)
+        except Exception as e_cmp:
+            print(f"[WARN] delete_from_large_table: metadata compaction failed - {e_cmp}")
+
         print(f"Deleted monster from large table {table_index}, position {monster_index}")
         print(f"Shifted {total_monsters - monster_index - 1} monsters forward")
         print(f"[DEBUG] delete_from_large_table AFTER: total_monsters_in_table={total_monsters - 1}")
@@ -2215,7 +2310,7 @@ def get_all_objectives(questFilePath: str) -> dict:
         'sub':  get_objective(questFilePath, 2)
     }
 
-def set_objective(questFilePath: str, objective_index: int, type_val: int = None, target_id: int = None, qty: int = None):
+def set_objective(questFilePath: str, objective_index: int, type_val: int , target_id: int , qty: int ):
     """
     Write one or more fields for an objective.
     Pass None for fields you don't want to change.
@@ -2275,8 +2370,8 @@ def write_objectives_for_monsters(path: str, monster_ids: list, prefer_type_for_
       - Ignorar totalmente las colas de Dalamadur/Shah en los objetivos.
       - Si hay 1 o 2 monstruos (tras filtrar colas): escribirlos como objetivos individuales.
       - Si hay más de 2: el tipo de quest debe ser 8 ("hunt all") en el slot 0 y
-        únicamente los 2 últimos monstruos deben figurar como objetivos específicos
-        (en los slots 1 y 2) con type=prefer_type_for_single y qty=1.
+        únicamente el último monstruo debe figurar como objetivo específico
+        (en los slots 0 y 1) con type=prefer_type_for_single y qty=1.
     """
     if monster_ids is None:
         monster_ids = []
@@ -2293,15 +2388,14 @@ def write_objectives_for_monsters(path: str, monster_ids: list, prefer_type_for_
             continue
         filtered.append(imid)
 
-    total = len(filtered)
-    if total == 0:
-        clear_all_objectives(path)
-        return
-
     # Limpiar antes de escribir
     clear_all_objectives(path)
 
-    if total <= 2:
+    total = len(filtered)
+    if total == 0:
+        return
+
+    elif total <= 2:
         # Escribir cada monstruo en su slot empezando en 0
         for i in range(total):
             _safe_set_objective(path, i, prefer_type_for_single, filtered[i], 1)
@@ -2309,12 +2403,21 @@ def write_objectives_for_monsters(path: str, monster_ids: list, prefer_type_for_
         for j in range(total, 3):
             _safe_set_objective(path, j, 0, 0, 0)
     else:
-        # Más de 2: poner tipo 8 (hunt all) en slot 0
-        _safe_set_objective(path, 0, 8, 0, 0)
-        # Sólo los 2 últimos monstruos como objetivos específicos en slots 1 y 2
-        last_two = filtered[-2:]
-        _safe_set_objective(path, 1, prefer_type_for_single, last_two[0], 1)
-        _safe_set_objective(path, 2, prefer_type_for_single, last_two[1], 1)
+     
+        # Sólo los 2 últimos monstruos como objetivos específicos en slots 0 y 1
+        last_two = []
+        last_two.append(filtered[len(filtered)-2])
+        if len(filtered) > 1:
+            last_two.append(filtered[len(filtered)-1])
+        else:
+            last_two.append(0)
+        print(f"last_two: {last_two}")
+        # If the last monster appears multiple times, require killing all of them
+        mid=last_two[1]
+        count_last = sum(1 for mid in filtered if mid == last_two[1])
+        qty_last = max(1, count_last)
+        _safe_set_objective(path, 0, 1, last_two[1], qty_last)
+        _safe_set_objective(path, 1, 1, last_two[1], qty_last)
 
 # ---------- VERIFY TABLES ----------
 def verify_tables(path: str, verbose: bool = True):
@@ -2438,7 +2541,6 @@ def verify_tables(path: str, verbose: bool = True):
 #   set_small_monster_condition("path.mib", 0, type_val=1, target=0x20, qty=5, group=0)
 #
 
-import os
 
 def get_all_monster_ids(parsedMib: dict) -> list:
     """
@@ -2540,6 +2642,12 @@ def set_large_monster_position_by_indices(path: str, top_index: int, monster_ind
     if off + 0x18 + 4 > size:
         print(f"[WARN] struct en 0x{off:X} demasiado cerca del EOF, no se escribe")
         return False
+
+    # Force head/tail monsters to origin (x=z=0) regardless of input
+    if info.get('monster_id') in (24, 83, 110, 111):
+        write_float_at(path, off + 0x10, 0.0)
+        write_float_at(path, off + 0x18, 0.0)
+        return True
 
     if new_x is not None:
         write_float_at(path, off + 0x10, float(new_x))

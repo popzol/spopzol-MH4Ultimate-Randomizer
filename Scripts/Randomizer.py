@@ -408,16 +408,8 @@ def moveUniqueToLastWave(quest_path: str):
     parsed = QuestEditor.parse_mib(quest_path)
     waves = parsed.get('large_monster_table', [])
     unique_monsters = set(VariousLists.uniqueMonstersList())
-
-    # Helper to find the last empty wave (treat single placeholder ID:1 as empty)
-    def _find_last_empty_wave(p):
-        wvs = p.get('large_monster_table', [])
-        for i in range(len(wvs) - 1, -1, -1):
-            if len(wvs[i]) == 0:
-                return i
-            if len(wvs[i]) == 1 and wvs[i][0].get('monster_id') == 1:
-                return i
-        return -1
+    # Note: this function strictly moves uniques to the last non-empty wave.
+    # Any isolation/new-wave logic belongs in isolateMonstersWhenUniquePresent.
 
     # Find last non-empty wave (for reference)
     last_wave_idx = -1
@@ -484,18 +476,87 @@ def isolateMonstersWhenUniquePresent(quest_path: str):
             wave.append(n.get('monster_id', 0))
             allmons.append(n.get('monster_id', 0))
         allWaves.append(wave)
+    # Special case: exactly two monsters total, both in wave 1.
+    # If a non-Dalamadur unique is present in wave 1, isolate it to a new wave.
+    try:
+        total_monsters = sum(len(w) for w in rawWaves)
+        if total_monsters == 2 and len(allWaves) > 0 and len(allWaves[0]) == 2:
+            unique_list = VariousLists.uniqueMonstersList()
+            first_wave_ids = allWaves[0]
+            unique_in_first = [mid for mid in first_wave_ids if (mid in unique_list) and (not isDalamadurHead(mid))]
+            if unique_in_first:
+                unique_id = unique_in_first[0]
+                # Insert an empty wave after the first wave
+                QuestEditor.insertEmptyWave(quest_path, 1)
+                # Move the unique monster into the new empty wave
+                moved = QuestEditor.move_monster_to_empty_table(quest_path, unique_id, 1)
+                # Delete the original instance from wave 1 using fresh indices after structural change
+                try:
+                    post = QuestEditor.parse_mib(quest_path)
+                    waves_now = post.get('large_monster_table', [])
+                    wave0_ids = [m.get('monster_id', 0) for m in (waves_now[0] if waves_now else [])]
+                    if unique_id in wave0_ids:
+                        idx0 = wave0_ids.index(unique_id)
+                        QuestEditor.delete_from_large_table(quest_path, {'table_index': 0, 'monster_index': idx0})
+                except Exception as de:
+                    print(f"[WARN] Fallback delete by id due to error: {de}")
+                    QuestEditor.delete_monster_by_id_first_instance(quest_path, unique_id)
+                # Update local tracking
+                allWaves.insert(1, [unique_id])
+                allWaves[0] = [mid for mid in allWaves[0] if mid != unique_id]
+    except Exception as e:
+        print(f"[WARN] Isolation special-case failed: {e}")
     if 24 in allmons or 110 in allmons or 46 in allmons:
         currentWave=0
         for w in allWaves:
             if(len(w)==2 and w[0]!=24 and w[0]!=110 and w[1]!=24 and w[1]!=110):
+                # Insert an empty wave right after the current wave
                 QuestEditor.insertEmptyWave(quest_path, currentWave+1)
-                QuestEditor.move_monster_to_empty_table(quest_path,w[1],currentWave+1)
-                QuestEditor.delete_from_large_table(quest_path,{'table_index':currentWave,'monster_index':1})
-                allWaves.insert(currentWave+1,[w[1]])
-                allWaves[currentWave].remove(w[1])
+                # Move one instance into the new empty wave. This function copies, so source remains.
+                QuestEditor.move_monster_to_empty_table(quest_path, w[1], currentWave+1)
+                # Explicitly delete the SECOND slot from the source wave to ensure only 1 remains.
+                # This handles duplicate IDs correctly by always removing position 1.
+                QuestEditor.delete_from_large_table(quest_path, {'table_index': currentWave, 'monster_index': 1})
+                # Update local tracking
+                allWaves.insert(currentWave+1, [w[1]])
+                allWaves[currentWave] = [w[0]]
             currentWave+=1
 
+def enforceArenaWave1Solo(quest_path: str):
+    """
+    Ensure wave 1 in arena maps has at most one monster, except the 110/111 head-tail pair.
+    If two monsters exist in wave 1 and it's not the head-tail pair, move the second to a new empty wave.
+    """
+    parsed = QuestEditor.parse_mib(quest_path)
+    large = parsed.get('large_monster_table', [])
+    if not large or len(large) < 1:
+        return
+    wave0 = large[0]
+    if len(wave0) < 2:
+        return
+    ids = [m.get('monster_id', 0) for m in wave0]
+    # Allow exact head-tail pair in any order
+    if set(ids) == {110, 111}:
+        return
+    # Otherwise, isolate the second monster into a new wave after wave 1
+    QuestEditor.insertEmptyWave(quest_path, 1)
+    # Copy the second slot into the empty wave
+    QuestEditor.move_monster_to_empty_table(quest_path, ids[1], 1)
+    # Delete the second slot from wave 1 to leave one monster
+    QuestEditor.delete_from_large_table(quest_path, {'table_index': 0, 'monster_index': 1})
 
+def getAllWaves(quest_path: str)->list:
+    """Return a flattened list of all monster IDs present in the quest."""
+    parsed = QuestEditor.parse_mib(quest_path)
+    waves = parsed.get('large_monster_table', []) if parsed else []
+
+    allWaves=[]
+    for wave in waves:
+        currentWave=[]
+        for m in wave:
+            currentWave.append(m.get('monster_id', 0))
+        allWaves.append(currentWave)
+    return allWaves
 
 def updateQuestObjectives(quest_path: str):
     """Update quest objectives to match all large monsters currently present in the quest.
@@ -592,12 +653,16 @@ def randomizeQuest(full_path: str):
         # 4. Apply map with areas/coordinates
         applyMapToQuest(full_path, selected_map, new_monsters)
         
+        # 4.5 Isolate unique monsters special-cases regardless of map to enforce rules
+        isolateMonstersWhenUniquePresent(full_path)
+        # 4.6 Enforce arena wave 1 solo rule (except head+tail)
+        if selected_map in VariousLists.getArenaMapsList():
+            enforceArenaWave1Solo(full_path)
+
         # 5. Move unique monsters to last wave first (before pairing)
         moveUniqueToLastWave(full_path)
 
-        # 5.5 Separate non-unique monsters into their own waves if arena rule applies
-        if settingNoMoreThanOneInArena and selected_map in VariousLists.getArenaMapsList():
-            isolateMonstersWhenUniquePresent(full_path)
+
         
         # 6. Ensure Dalamadur/Shah pairing
         ensureDalamadurPairing(full_path)
@@ -635,7 +700,6 @@ def randomizeQuest(full_path: str):
                 print(f"[WARN] Final monster count {final_count} differs from original {original_count}")
         
         print(f"[SUCCESS] Quest randomized: {os.path.basename(full_path)}")
-        
     except Exception as e:
         print(f"[ERROR] Failed to randomize quest: {e}")
 
@@ -651,8 +715,10 @@ def main():
     for file in os.listdir(folder):
         if file.endswith('.1BBFD18E'):
             print('\n' + '='*50)
+            print ("before: ",QuestEditor.parse_mib(os.path.join(folder, file))['large_monster_table']) 
             full_path = os.path.join(folder, file)
             randomizeQuest(full_path)
+            print ("after: ",QuestEditor.parse_mib(full_path)['large_monster_table']) 
 
 if __name__ == "__main__":
     folder = getQuestFolder()
